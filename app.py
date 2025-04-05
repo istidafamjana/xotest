@@ -1,77 +1,100 @@
 from flask import Flask, request
 import requests
+import os
+import google.generativeai as genai
 
 app = Flask(__name__)
 
-PAGE_ACCESS_TOKEN = "EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD"
-VERIFY_TOKEN = "d51ee4e3183dbbd9a27b7d2c1af8c655"
+PAGE_ACCESS_TOKEN = os.getenv("EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD")
+VERIFY_TOKEN = os.getenv("d51ee4e3183dbbd9a27b7d2c1af8c655")
+GEMINI_API_KEY = os.getenv("AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU")
 
-players_queue = []
-active_games = {}
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel("gemini-pro")
 
-board_template = lambda b: f"""{b[0]} | {b[1]} | {b[2]}
----+---+---
-{b[3]} | {b[4]} | {b[5]}
----+---+---
-{b[6]} | {b[7]} | {b[8]}
-"""
+# قاموس لتخزين المحادثات مؤقتًا
+conversations = {}
 
-def send_message(recipient_id, text):
-    data = {
-        "recipient": {"id": recipient_id},
-        "message": {"text": text},
-        "messaging_type": "RESPONSE",
-        "access_token": PAGE_ACCESS_TOKEN
-    }
-    requests.post("https://graph.facebook.com/v16.0/me/messages", json=data)
-
-def send_quick_reply(recipient_id, text):
-    data = {
+# إرسال رسالة نصية مع أزرار اختيارية
+def send_message(recipient_id, text, buttons=None):
+    url = f"https://graph.facebook.com/v17.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
+    payload = {
         "recipient": {"id": recipient_id},
         "message": {
-            "text": text,
-            "quick_replies": [
-                {"content_type": "text", "title": "✖️", "payload": "XO_X"},
-                {"content_type": "text", "title": "⭕️", "payload": "XO_O"},
-                {"content_type": "text", "title": "تبديل لاعب", "payload": "CHANGE_PLAYER"},
-                {"content_type": "text", "title": "اللعب مع AI", "payload": "PLAY_AI"}
-            ]
-        },
-        "messaging_type": "RESPONSE",
-        "access_token": PAGE_ACCESS_TOKEN
+            "text": text
+        }
     }
-    requests.post('https://graph.facebook.com/v16.0/me/messages', json=data)
 
-def get_ai_reply(text):
-    try:
-        url = f"https://dev-pycodz-blackbox.pantheonsite.io/DEvZ44d/aii.php?text={text}"
-        res = requests.get(url)
-        return res.text if res.status_code == 200 else "حدث خطأ مع الذكاء الاصطناعي."
-    except:
-        return "خطأ في الاتصال بـ AI."
+    if buttons:
+        payload["message"] = {
+            "attachment": {
+                "type": "template",
+                "payload": {
+                    "template_type": "button",
+                    "text": text,
+                    "buttons": buttons
+                }
+            }
+        }
+
+    requests.post(url, json=payload)
+
+# توليد أزرار الأوامر
+def main_buttons():
+    return [
+        {"type": "postback", "title": "ابدأ /start", "payload": "/start"},
+        {"type": "postback", "title": "مساعدة /help", "payload": "/help"},
+        {"type": "postback", "title": "إعادة البدء 🔁", "payload": "/restart"}
+    ]
 
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
     if request.method == "GET":
         if request.args.get("hub.verify_token") == VERIFY_TOKEN:
             return request.args.get("hub.challenge")
-        return "Invalid verification token"
-    elif request.method == "POST":
-        data = request.json
-        for entry in data["entry"]:
-            for msg_event in entry["messaging"]:
-                sender_id = msg_event["sender"]["id"]
-                if "message" in msg_event:
-                    message_text = msg_event["message"].get("text", "")
-                    if message_text not in ["✖️", "⭕️"]:
-                        send_message(sender_id, "الرجاء إرسال ✖️ أو ⭕️ فقط.")
-                        send_quick_reply(sender_id, "اختر رمزًا للعب:")
-                    else:
-                        send_message(sender_id, f"تم تسجيل: {message_text}")
-                elif "postback" in msg_event:
-                    payload = msg_event["postback"]["payload"]
-                    send_message(sender_id, f"تم اختيار: {payload}")
-        return "ok"
+        return "خطأ في التحقق", 403
 
+    data = request.json
+    for entry in data.get("entry", []):
+        for message_event in entry.get("messaging", []):
+            sender_id = message_event["sender"]["id"]
+
+            # الحصول على الرسالة المرسلة
+            user_msg = ""
+            if message_event.get("message", {}).get("text"):
+                user_msg = message_event["message"]["text"]
+            elif message_event.get("postback", {}).get("payload"):
+                user_msg = message_event["postback"]["payload"]
+            else:
+                send_message(sender_id, "مرحبًا بك! استخدم الأزرار لبدء المحادثة.", main_buttons())
+                continue
+
+            # التفاعل مع الأوامر
+            if user_msg == "/start":
+                send_message(sender_id, "ابدأ المحادثة الآن! أرسل لي أي رسالة.", main_buttons())
+            elif user_msg == "/help":
+                send_message(sender_id, "اكتب لي أي سؤال، وسأجيب باستخدام الذكاء الاصطناعي. استخدم الأزرار للتنقل.", main_buttons())
+            elif user_msg == "/restart":
+                conversations[sender_id] = []  # مسح المحادثة السابقة
+                send_message(sender_id, "تمت إعادة تعيين المحادثة. يمكنك البدء من جديد.", main_buttons())
+            else:
+                # التفاعل مع الذكاء الاصطناعي باستخدام Gemini
+                if sender_id not in conversations:
+                    conversations[sender_id] = []
+
+                # إضافة الرسالة إلى المحادثة الحالية
+                conversations[sender_id].append({'user': user_msg})
+
+                # طلب الرد من Gemini AI
+                ai_response = model.generate_content(user_msg)
+                ai_text = ai_response.text
+
+                # إضافة الرد من Gemini إلى المحادثة
+                conversations[sender_id].append({'ai': ai_text})
+
+                # إرسال الرد للمستخدم
+                send_message(sender_id, ai_text, main_buttons())
+
+    return "تم", 200
 if __name__ == "__main__":
     app.run()
