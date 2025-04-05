@@ -4,8 +4,6 @@ import google.generativeai as genai
 from datetime import datetime, timedelta
 import logging
 from io import BytesIO
-from PIL import Image
-import os
 
 app = Flask(__name__)
 
@@ -13,20 +11,19 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 🔑 التوكنات والمفاتيح
-PAGE_ACCESS_TOKEN = "EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD"  # توكن صفحتك
-VERIFY_TOKEN = "d51ee4e3183dbbd9a27b7d2c1af8c655"  # توكن التحقق
-GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"  # مفتاح Gemini
+# 🔑 التوكنات المضمنة مباشرة (للتجربة فقط)
+PAGE_ACCESS_TOKEN = "EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD"
+VERIFY_TOKEN = "d51ee4e3183dbbd9a27b7d2c1af8c655"
+GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"
 
 # ⚙️ تهيئة نموذج Gemini
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
 # 💾 تخزين المحادثات (24 ساعة)
-CONVERSATION_TIMEOUT = timedelta(hours=24)
 conversations = {}
 
-# 🎨 تصميم القوائم والأزرار
+# 🎨 تصميم القوائم
 def get_persistent_menu():
     return {
         "persistent_menu": [
@@ -36,17 +33,17 @@ def get_persistent_menu():
                 "call_to_actions": [
                     {
                         "type": "postback",
-                        "title": "🏠 القائمة الرئيسية",
+                        "title": "🏠 ابدأ",
                         "payload": "/start"
                     },
                     {
                         "type": "postback",
-                        "title": "❓ المساعدة",
+                        "title": "❓ مساعدة",
                         "payload": "/help"
                     },
                     {
                         "type": "postback",
-                        "title": "🔄 إعادة البدء",
+                        "title": "🔄 إعادة",
                         "payload": "/restart"
                     }
                 ]
@@ -54,172 +51,132 @@ def get_persistent_menu():
         ]
     }
 
-def get_main_buttons():
+def get_quick_replies():
     return [
-        {"type": "postback", "title": "📖 المساعدة", "payload": "/help"},
-        {"type": "postback", "title": "🔄 إعادة", "payload": "/restart"},
-        {"type": "postback", "title": "ℹ️ عن البوت", "payload": "/about"}
+        {"content_type": "text", "title": "🆘 مساعدة", "payload": "/help"},
+        {"content_type": "text", "title": "🔄 إعادة", "payload": "/restart"},
+        {"content_type": "text", "title": "ℹ️ معلومات", "payload": "/about"}
     ]
 
 # ✉️ إرسال الرسائل
-def send_message(recipient_id, text, buttons=False, image_url=None):
+def send_message(recipient_id, text, quick_replies=False):
     url = f"https://graph.facebook.com/v17.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
     
-    if image_url:
-        payload = {
-            "recipient": {"id": recipent_id},
-            "message": {
-                "attachment": {
-                    "type": "image",
-                    "payload": {"url": image_url, "is_reusable": True}
-                }
-            }
+    payload = {
+        "recipient": {"id": recipient_id},
+        "message": {
+            "text": text,
+            "quick_replies": get_quick_replies() if quick_replies else []
         }
-    else:
-        payload = {
-            "recipient": {"id": recipent_id},
-            "message": {"text": text}
-        }
-        
-        if buttons:
-            payload["message"]["quick_replies"] = get_main_buttons()
+    }
     
     try:
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=10)
         response.raise_for_status()
     except Exception as e:
         logger.error(f"فشل الإرسال: {e}")
 
 # 🖼️ معالجة الصور
-def process_image(image_url):
+def analyze_image(image_url):
     try:
-        response = requests.get(image_url)
-        img = Image.open(BytesIO(response.content))
-        return img
+        response = requests.get(image_url, timeout=15)
+        response.raise_for_status()
+        
+        prompt = """حلل هذه الصورة وقدم:
+        1. وصف مفصل للمحتوى
+        2. المشاكل المحتملة
+        3. الحلول المقترحة
+        4. نصائح عملية"""
+        
+        response = model.generate_content([prompt, response.content])
+        return response.text
     except Exception as e:
-        logger.error(f"خطأ في معالجة الصورة: {e}")
+        logger.error(f"خطأ في تحليل الصورة: {e}")
         return None
 
-# 🎚 معالجة الأوامر
-def handle_command(sender_id, command):
-    commands = {
-        "/start": "مرحبًا بك! أنا بوت الذكاء الاصطناعي. يمكنك:\n- إرسال أي سؤال\n- إرسال صور لتحليلها\n- استخدام الأوامر أدناه",
-        "/help": "📜 الأوامر:\n/start - بدء المحادثة\n/help - المساعدة\n/restart - بدء جديد\n/about - معلومات البوت",
-        "/about": "🤖 البوت:\nالإصدار: 3.0\nالنموذج: Gemini 1.5 Flash\nيدعم النصوص والصور",
-        "/restart": "تم إعادة ضبط المحادثة. يمكنك البدء من جديد!"
-    }
-    
-    if command == "/restart" and sender_id in conversations:
-        del conversations[sender_id]
-    
-    send_message(sender_id, commands[command], buttons=True)
-
 # 🌐 إعداد القائمة الدائمة
-@app.before_first_request
-def setup_persistent_menu():
+def setup_menu():
     url = f"https://graph.facebook.com/v17.0/me/messenger_profile?access_token={PAGE_ACCESS_TOKEN}"
-    try:
-        response = requests.post(url, json=get_persistent_menu())
-        response.raise_for_status()
-        logger.info("تم إعداد القائمة الدائمة بنجاح")
-    except Exception as e:
-        logger.error(f"فشل إعداد القائمة: {e}")
+    requests.post(url, json=get_persistent_menu())
 
 # 🌐 الويب هوك
-@app.route('/webhook', methods=['GET', 'POST'])
+@app.route('/', methods=['GET', 'POST'])
 def webhook():
     if request.method == 'GET':
         if request.args.get('hub.verify_token') == VERIFY_TOKEN:
             return request.args.get('hub.challenge')
-        return "Verification failed", 403
+        return "توكن التحقق غير صحيح", 403
     
     data = request.get_json()
-    logger.debug(f"البيانات الواردة: {data}")
+    logger.info(f"بيانات الواردة: {data}")
     
     try:
         for entry in data.get('entry', []):
             for event in entry.get('messaging', []):
                 sender_id = event['sender']['id']
                 
-                # تحديث/إنشاء محادثة
-                if sender_id not in conversations:
-                    conversations[sender_id] = {
-                        "history": [],
-                        "expiry": datetime.now() + CONVERSATION_TIMEOUT
-                    }
-                else:
-                    conversations[sender_id]["expiry"] = datetime.now() + CONVERSATION_TIMEOUT
+                # تحديث وقت المحادثة
+                conversations[sender_id] = datetime.now() + timedelta(hours=24)
                 
-                # معالجة الرسائل
                 if 'message' in event:
                     message = event['message']
                     
                     if 'text' in message:
-                        handle_text_message(sender_id, message['text'])
-                    
+                        handle_text(sender_id, message['text'])
                     elif 'attachments' in message:
-                        for attachment in message['attachments']:
-                            if attachment['type'] == 'image':
-                                handle_image_message(sender_id, attachment['payload']['url'])
+                        for att in message['attachments']:
+                            if att['type'] == 'image':
+                                handle_image(sender_id, att['payload']['url'])
                 
                 elif 'postback' in event:
-                    handle_command(sender_id, event['postback']['payload'])
+                    handle_postback(sender_id, event['postback']['payload'])
     
     except Exception as e:
-        logger.error(f"خطأ في الويب هوك: {e}")
+        logger.error(f"خطأ: {e}")
         return jsonify({"status": "error"}), 500
     
     return jsonify({"status": "success"}), 200
 
-def handle_text_message(sender_id, text):
-    if text.lower() in ["/start", "/help", "/about", "/restart"]:
-        handle_command(sender_id, text.lower())
+def handle_text(sender_id, text):
+    text = text.strip().lower()
+    
+    if text in ['/start', '/help', '/restart', '/about']:
+        handle_command(sender_id, text)
     else:
         try:
-            # إضافة السياق من المحادثة السابقة
-            context = "\n".join([msg['content'] for msg in conversations[sender_id]["history"]][-3:])
-            prompt = f"المحادثة السابقة:\n{context}\n\nالسؤال الجديد: {text}"
-            
-            response = model.generate_content(prompt)
-            reply = response.text
-            
-            # حفظ المحادثة
-            conversations[sender_id]["history"].append({
-                "type": "text",
-                "content": text,
-                "timestamp": datetime.now()
-            })
-            
-            send_message(sender_id, reply, buttons=True)
+            response = model.generate_content(f"المستخدم يسأل: {text}\n\nأجب بشكل مفصل ومنظم:")
+            send_message(sender_id, response.text, quick_replies=True)
         except Exception as e:
             logger.error(f"خطأ في معالجة النص: {e}")
-            send_message(sender_id, "حدث خطأ في معالجة سؤالك", buttons=True)
+            send_message(sender_id, "حدث خطأ في المعالجة", quick_replies=True)
 
-def handle_image_message(sender_id, image_url):
+def handle_image(sender_id, image_url):
     try:
-        img = process_image(image_url)
-        if img:
-            prompt = """الرجاء تحليل هذه الصورة وتقديم:
-            1. وصف مفصل للمحتوى
-            2. أي مشاكل محتملة
-            3. حلول مقترحة
-            4. نصائح ذات صلة"""
-            
-            response = model.generate_content([prompt, img])
-            reply = "تحليل الصورة:\n" + response.text
-            
-            # حفظ المحادثة
-            conversations[sender_id]["history"].append({
-                "type": "image",
-                "content": image_url,
-                "analysis": reply,
-                "timestamp": datetime.now()
-            })
-            
-            send_message(sender_id, reply, buttons=True)
+        analysis = analyze_image(image_url)
+        if analysis:
+            reply = "📊 تحليل الصورة:\n\n" + analysis
+            send_message(sender_id, reply, quick_replies=True)
+        else:
+            send_message(sender_id, "⚠️ لم أستطع تحليل الصورة", quick_replies=True)
     except Exception as e:
         logger.error(f"خطأ في معالجة الصورة: {e}")
-        send_message(sender_id, "حدث خطأ في تحليل الصورة", buttons=True)
+        send_message(sender_id, "حدث خطأ في تحليل الصورة", quick_replies=True)
+
+def handle_postback(sender_id, payload):
+    commands = {
+        "/start": "مرحبًا! أنا بوت الذكاء الاصطناعي. يمكنك:\n- إرسال أي سؤال\n- إرسال صور لتحليلها\n- استخدام الأوامر أدناه",
+        "/help": "🔍 الأوامر المتاحة:\n\n/start - بدء المحادثة\n/help - عرض المساعدة\n/restart - إعادة التعيين\n/about - معلومات البوت",
+        "/about": "🤖 معلومات البوت:\n\nالإصدار: 3.0\nالنموذج: Gemini 1.5 Flash\nالميزات: يدعم النصوص والصور",
+        "/restart": "تم إعادة ضبط المحادثة. يمكنك البدء من جديد!"
+    }
+    
+    if payload in commands:
+        send_message(sender_id, commands[payload], quick_replies=True)
+    else:
+        send_message(sender_id, "أمر غير معروف", quick_replies=True)
+
+# تشغيل الإعدادات عند البدء
+setup_menu()
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run()
