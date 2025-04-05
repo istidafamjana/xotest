@@ -4,7 +4,7 @@ import os
 import google.generativeai as genai
 from datetime import datetime, timedelta
 
-app = Flask(name)
+app = Flask(__name__)
 
 # تحميل المتغيرات البيئية
 PAGE_ACCESS_TOKEN = os.getenv("EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD")
@@ -98,7 +98,7 @@ def webhook():
                     conversations[sender_id] = {
                         'history': [],
                         'expiry': datetime.now() + timedelta(hours=1)
-                        }
+                    }
                 
                 try:
                     # إنشاء المحادثة مع التاريخ
@@ -121,5 +121,5 @@ def webhook():
 
     return jsonify({"status": "success"}), 200
 
-if name == "main":
+if __name__ == "__main__":
     app.run(debug=True)
