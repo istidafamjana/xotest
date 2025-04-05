@@ -4,6 +4,8 @@ import google.generativeai as genai
 from datetime import datetime, timedelta
 import logging
 from io import BytesIO
+import asyncio
+from threading import Thread
 
 app = Flask(__name__)
 
@@ -11,14 +13,14 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 🔑 التوكنات المضمنة مباشرة
+# 🔑 التوكنات
 PAGE_ACCESS_TOKEN = "EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD"
 VERIFY_TOKEN = "d51ee4e3183dbbd9a27b7d2c1af8c655"
 GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"
 
 # ⚙️ تهيئة نموذج Gemini
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-1.5-flash-latest')  # أحدث إصدار
 
 # 💾 تخزين المحادثات
 conversations = {}
@@ -33,17 +35,17 @@ def get_persistent_menu():
                 "call_to_actions": [
                     {
                         "type": "postback",
-                        "title": "🏠 ابدأ",
+                        "title": "🏠 ابدأ /start",
                         "payload": "/start"
                     },
                     {
                         "type": "postback",
-                        "title": "❓ مساعدة",
+                        "title": "❓ مساعدة /help",
                         "payload": "/help"
                     },
                     {
                         "type": "postback",
-                        "title": "🔄 إعادة",
+                        "title": "🔄 إعادة /restart",
                         "payload": "/restart"
                     }
                 ]
@@ -53,14 +55,27 @@ def get_persistent_menu():
 
 def get_quick_replies():
     return [
+        {"content_type": "text", "title": "🔍 ابدأ", "payload": "/start"},
         {"content_type": "text", "title": "🆘 مساعدة", "payload": "/help"},
-        {"content_type": "text", "title": "🔄 إعادة", "payload": "/restart"},
-        {"content_type": "text", "title": "ℹ️ معلومات", "payload": "/about"}
+        {"content_type": "text", "title": "🔄 إعادة", "payload": "/restart"}
     ]
 
-# ✉️ إرسال الرسائل
+# ✉️ إرسال الرسائل (باستخدام الجلسات)
 def send_message(recipient_id, text, quick_replies=False):
     url = f"https://graph.facebook.com/v17.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
+    
+    # تقسيم الرسائل الطويلة
+    max_length = 2000
+    if len(text) > max_length:
+        parts = [text[i:i+max_length] for i in range(0, len(text), max_length)]
+        for part in parts:
+            payload = {
+                "recipient": {"id": recipient_id},
+                "message": {"text": part}
+            }
+            requests.post(url, json=payload)
+            time.sleep(0.5)  # تجنب rate limiting
+        return
     
     payload = {
         "recipient": {"id": recipient_id},
@@ -73,57 +88,43 @@ def send_message(recipient_id, text, quick_replies=False):
     try:
         response = requests.post(url, json=payload, timeout=10)
         response.raise_for_status()
-        return True
     except Exception as e:
         logger.error(f"فشل الإرسال: {e}")
-        return False
 
-# 🖼️ معالجة الصور (محسنة)
-def analyze_image(image_url):
+# 🖼️ معالجة الصور (سريعة)
+async def analyze_image_async(image_url):
     try:
-        # تحميل الصورة مع زيادة المهلة
-        response = requests.get(image_url, timeout=20)
+        # تحميل الصورة بشكل غير متزامن
+        response = await asyncio.to_thread(requests.get, image_url, timeout=15)
         response.raise_for_status()
         
-        # تحقق من نوع المحتوى
-        if 'image/' not in response.headers.get('Content-Type', ''):
-            logger.error("الملف ليس صورة")
-            return None
-            
-        # تحليل الصورة مع تعليمات مفصلة
-        prompt = """**مطلوب تحليل الصورة بالتفصيل:**
-1. صف كل العناصر المرئية الرئيسية
-2. اذكر أي مشاكل أو أعطال واضحة
-3. اقترح حلول عملية لكل مشكلة
-4. قدم نصائح للتحسين
+        # نموذج التحليل السريع
+        prompt = """حلل الصورة بسرعة وأجب بالنقاط:
+1. الوصف المختصر (سطر واحد)
+2. 3 مشاكل محتملة
+3. 3 حلول مقترحة
         
-تنسيق الإجابة:
-- الوصف: [تفصيل المحتوى]
-- المشاكل: [القائمة]
-- الحلول: [المقترحات]
-- النصائح: [التوصيات]"""
+الإجابة يجب أن تكون مختصرة وفي نقاط"""
         
         response = model.generate_content(
             [prompt, response.content],
-            generation_config={"temperature": 0.3}
+            generation_config={
+                "temperature": 0.2,
+                "max_output_tokens": 500  # تقليل طول الإجابة
+            }
         )
         return response.text
-    except requests.exceptions.RequestException as e:
-        logger.error(f"خطأ في تحميل الصورة: {e}")
-        return None
     except Exception as e:
         logger.error(f"خطأ في تحليل الصورة: {e}")
         return None
 
-# 🌐 إعداد القائمة الدائمة
-def setup_menu():
-    url = f"https://graph.facebook.com/v17.0/me/messenger_profile?access_token={PAGE_ACCESS_TOKEN}"
-    try:
-        response = requests.post(url, json=get_persistent_menu())
-        response.raise_for_status()
-        logger.info("تم إعداد القائمة الدائمة بنجاح")
-    except Exception as e:
-        logger.error(f"فشل إعداد القائمة: {e}")
+# 🚀 معالجة الأوامر السريعة
+command_responses = {
+    "/start": "✅ تم بدء الجلسة\n\nمرحبًا! أنا بوت الذكاء الاصطناعي. استخدم الأزرار للتحكم:",
+    "/help": "📋 الأوامر السريعة:\n\n/start - بدء جديد\n/help - هذه التعليمات\n/restart - إعادة التعيين",
+    "/restart": "🔄 تم إعادة التعيين\n\nتم مسح تاريخ المحادثة بنجاح",
+    "/about": "🤖 معلومات البوت:\n\n• الإصدار: 3.2\n• النموذج: Gemini Flash\n• السرعة: فائقة"
+}
 
 # 🌐 الويب هوك
 @app.route('/webhook', methods=['GET', 'POST'])
@@ -141,73 +142,63 @@ def webhook():
             for event in entry.get('messaging', []):
                 sender_id = event['sender']['id']
                 
-                # تحديث وقت المحادثة
-                conversations[sender_id] = datetime.now() + timedelta(hours=24)
-                
+                # معالجة الأحداث
                 if 'message' in event:
                     message = event['message']
-                    
                     if 'text' in message:
-                        handle_text(sender_id, message['text'])
+                        handle_text_message(sender_id, message['text'])
                     elif 'attachments' in message:
-                        for att in message['attachments']:
-                            if att['type'] == 'image':
-                                handle_image(sender_id, att['payload']['url'])
+                        Thread(target=handle_attachments, args=(sender_id, message['attachments'])).start()
                 
                 elif 'postback' in event:
                     handle_postback(sender_id, event['postback']['payload'])
     
     except Exception as e:
         logger.error(f"خطأ: {e}")
-        return jsonify({"status": "error"}), 500
     
     return jsonify({"status": "success"}), 200
 
-def handle_text(sender_id, text):
+def handle_text_message(sender_id, text):
     text = text.strip().lower()
-    
-    if text.startswith('/'):
-        handle_command(sender_id, text)
+    if text in command_responses:
+        send_message(sender_id, command_responses[text], quick_replies=True)
     else:
         try:
+            # إجابة سريعة مع تحسين الأداء
             response = model.generate_content(
-                f"السؤال: {text}\n\nالرجاء الإجابة بشكل منظم مع عناوين فرعية",
-                generation_config={"temperature": 0.4}
+                f"السؤال: {text}\n\nالرجاء الإجابة باختصار في نقاط",
+                generation_config={
+                    "temperature": 0.3,
+                    "max_output_tokens": 800
+                }
             )
-            send_message(sender_id, f"✅ تمت المعالجة:\n\n{response.text}", quick_replies=True)
+            send_message(sender_id, f"📝 الإجابة:\n\n{response.text}", quick_replies=True)
         except Exception as e:
             logger.error(f"خطأ في معالجة النص: {e}")
-            send_message(sender_id, "⚠️ حدث خطأ أثناء المعالجة، يرجى المحاولة لاحقًا", quick_replies=True)
+            send_message(sender_id, "⚠️ حدث خطأ، يرجى المحاولة لاحقًا", quick_replies=True)
 
-def handle_image(sender_id, image_url):
-    loading_msg = "⏳ جاري تحليل الصورة، يرجى الانتظار..."
-    if not send_message(sender_id, loading_msg):
-        return
-    
-    analysis = analyze_image(image_url)
-    if analysis:
-        reply = f"📋 نتائج التحليل:\n\n{analysis}\n\n✅ تم الانتهاء"
+def handle_attachments(sender_id, attachments):
+    for att in attachments:
+        if att['type'] == 'image':
+            send_message(sender_id, "⏳ جاري تحليل الصورة بسرعة...")
+            analysis = asyncio.run(analyze_image_async(att['payload']['url']))
+            if analysis:
+                send_message(sender_id, f"📸 نتيجة التحليل السريع:\n\n{analysis}", quick_replies=True)
+            else:
+                send_message(sender_id, "⚠️ لم أستطع تحليل الصورة، يرجى إرسال صورة أوضح", quick_replies=True)
+
+def handle_postback(sender_id, payload):
+    if payload in command_responses:
+        send_message(sender_id, command_responses[payload], quick_replies=True)
     else:
-        reply = "⚠️ تعذر تحليل الصورة، يرجى إرسال صورة أخرى أو التأكد من وضوحها"
-    
-    send_message(sender_id, reply, quick_replies=True)
+        send_message(sender_id, "⚠️ أمر غير معروف", quick_replies=True)
 
-def handle_command(sender_id, command):
-    command = command.lower().strip()
-    responses = {
-        "/start": "🚀 تم بدء جلسة جديدة\n\nمرحبًا! أنا بوت الذكاء الاصطناعي الخاص بك. يمكنك:\n• إرسال أي سؤال\n• تحميل الصور للتحليل\n• استخدام الأوامر الأخرى",
-        "/help": "📚 الأوامر المتاحة:\n\n/start - بدء جلسة جديدة\n/help - عرض هذه المساعدة\n/restart - إعادة تعيين البوت\n/about - معلومات عن البوت",
-        "/about": "🤖 معلومات البوت:\n\n• الإصدار: 3.1\n• النموذج: Gemini 1.5 Flash\n• الميزات:\n  - تحليل الصور المتقدم\n  - فهم السياق\n  - إجابات مفصلة",
-        "/restart": "🔄 تم إعادة تعيين البوت بنجاح\n\nتم مسح جميع البيانات السابقة، يمكنك البدء من جديد"
-    }
-    
-    if command in responses:
-        send_message(sender_id, responses[command], quick_replies=True)
-    else:
-        send_message(sender_id, "⚠️ أمر غير معروف\n\nاستخدم /help لرؤية الأوامر المتاحة", quick_replies=True)
+# تشغيل الإعدادات
+def setup():
+    url = f"https://graph.facebook.com/v17.0/me/messenger_profile?access_token={PAGE_ACCESS_TOKEN}"
+    requests.post(url, json=get_persistent_menu())
 
-# تشغيل الإعدادات عند البدء
-setup_menu()
+setup()
 
 if __name__ == '__main__':
-    app.run()
+    app.run(threaded=True)
