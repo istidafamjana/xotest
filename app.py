@@ -73,23 +73,44 @@ def send_message(recipient_id, text, quick_replies=False):
     try:
         response = requests.post(url, json=payload, timeout=10)
         response.raise_for_status()
+        return True
     except Exception as e:
         logger.error(f"فشل الإرسال: {e}")
+        return False
 
-# 🖼️ معالجة الصور
+# 🖼️ معالجة الصور (محسنة)
 def analyze_image(image_url):
     try:
-        response = requests.get(image_url, timeout=15)
+        # تحميل الصورة مع زيادة المهلة
+        response = requests.get(image_url, timeout=20)
         response.raise_for_status()
         
-        prompt = """حلل هذه الصورة وقدم:
-        1. وصف مفصل للمحتوى
-        2. المشاكل المحتملة
-        3. الحلول المقترحة
-        4. نصائح عملية"""
+        # تحقق من نوع المحتوى
+        if 'image/' not in response.headers.get('Content-Type', ''):
+            logger.error("الملف ليس صورة")
+            return None
+            
+        # تحليل الصورة مع تعليمات مفصلة
+        prompt = """**مطلوب تحليل الصورة بالتفصيل:**
+1. صف كل العناصر المرئية الرئيسية
+2. اذكر أي مشاكل أو أعطال واضحة
+3. اقترح حلول عملية لكل مشكلة
+4. قدم نصائح للتحسين
         
-        response = model.generate_content([prompt, response.content])
+تنسيق الإجابة:
+- الوصف: [تفصيل المحتوى]
+- المشاكل: [القائمة]
+- الحلول: [المقترحات]
+- النصائح: [التوصيات]"""
+        
+        response = model.generate_content(
+            [prompt, response.content],
+            generation_config={"temperature": 0.3}
+        )
         return response.text
+    except requests.exceptions.RequestException as e:
+        logger.error(f"خطأ في تحميل الصورة: {e}")
+        return None
     except Exception as e:
         logger.error(f"خطأ في تحليل الصورة: {e}")
         return None
@@ -97,9 +118,14 @@ def analyze_image(image_url):
 # 🌐 إعداد القائمة الدائمة
 def setup_menu():
     url = f"https://graph.facebook.com/v17.0/me/messenger_profile?access_token={PAGE_ACCESS_TOKEN}"
-    requests.post(url, json=get_persistent_menu())
+    try:
+        response = requests.post(url, json=get_persistent_menu())
+        response.raise_for_status()
+        logger.info("تم إعداد القائمة الدائمة بنجاح")
+    except Exception as e:
+        logger.error(f"فشل إعداد القائمة: {e}")
 
-# 🌐 الويب هوك - المسار المطلوب /webhook
+# 🌐 الويب هوك
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
     if request.method == 'GET':
@@ -140,40 +166,45 @@ def webhook():
 def handle_text(sender_id, text):
     text = text.strip().lower()
     
-    if text in ['/start', '/help', '/restart', '/about']:
+    if text.startswith('/'):
         handle_command(sender_id, text)
     else:
         try:
-            response = model.generate_content(f"المستخدم يسأل: {text}\n\nأجب بشكل مفصل ومنظم:")
-            send_message(sender_id, response.text, quick_replies=True)
+            response = model.generate_content(
+                f"السؤال: {text}\n\nالرجاء الإجابة بشكل منظم مع عناوين فرعية",
+                generation_config={"temperature": 0.4}
+            )
+            send_message(sender_id, f"✅ تمت المعالجة:\n\n{response.text}", quick_replies=True)
         except Exception as e:
             logger.error(f"خطأ في معالجة النص: {e}")
-            send_message(sender_id, "حدث خطأ في المعالجة", quick_replies=True)
+            send_message(sender_id, "⚠️ حدث خطأ أثناء المعالجة، يرجى المحاولة لاحقًا", quick_replies=True)
 
 def handle_image(sender_id, image_url):
-    try:
-        analysis = analyze_image(image_url)
-        if analysis:
-            reply = "📊 تحليل الصورة:\n\n" + analysis
-            send_message(sender_id, reply, quick_replies=True)
-        else:
-            send_message(sender_id, "⚠️ لم أستطع تحليل الصورة", quick_replies=True)
-    except Exception as e:
-        logger.error(f"خطأ في معالجة الصورة: {e}")
-        send_message(sender_id, "حدث خطأ في تحليل الصورة", quick_replies=True)
+    loading_msg = "⏳ جاري تحليل الصورة، يرجى الانتظار..."
+    if not send_message(sender_id, loading_msg):
+        return
+    
+    analysis = analyze_image(image_url)
+    if analysis:
+        reply = f"📋 نتائج التحليل:\n\n{analysis}\n\n✅ تم الانتهاء"
+    else:
+        reply = "⚠️ تعذر تحليل الصورة، يرجى إرسال صورة أخرى أو التأكد من وضوحها"
+    
+    send_message(sender_id, reply, quick_replies=True)
 
-def handle_postback(sender_id, payload):
-    commands = {
-        "/start": "مرحبًا! أنا بوت الذكاء الاصطناعي. يمكنك:\n- إرسال أي سؤال\n- إرسال صور لتحليلها\n- استخدام الأوامر أدناه",
-        "/help": "🔍 الأوامر المتاحة:\n\n/start - بدء المحادثة\n/help - عرض المساعدة\n/restart - إعادة التعيين\n/about - معلومات البوت",
-        "/about": "🤖 معلومات البوت:\n\nالإصدار: 3.0\nالنموذج: Gemini 1.5 Flash\nالميزات: يدعم النصوص والصور",
-        "/restart": "تم إعادة ضبط المحادثة. يمكنك البدء من جديد!"
+def handle_command(sender_id, command):
+    command = command.lower().strip()
+    responses = {
+        "/start": "🚀 تم بدء جلسة جديدة\n\nمرحبًا! أنا بوت الذكاء الاصطناعي الخاص بك. يمكنك:\n• إرسال أي سؤال\n• تحميل الصور للتحليل\n• استخدام الأوامر الأخرى",
+        "/help": "📚 الأوامر المتاحة:\n\n/start - بدء جلسة جديدة\n/help - عرض هذه المساعدة\n/restart - إعادة تعيين البوت\n/about - معلومات عن البوت",
+        "/about": "🤖 معلومات البوت:\n\n• الإصدار: 3.1\n• النموذج: Gemini 1.5 Flash\n• الميزات:\n  - تحليل الصور المتقدم\n  - فهم السياق\n  - إجابات مفصلة",
+        "/restart": "🔄 تم إعادة تعيين البوت بنجاح\n\nتم مسح جميع البيانات السابقة، يمكنك البدء من جديد"
     }
     
-    if payload in commands:
-        send_message(sender_id, commands[payload], quick_replies=True)
+    if command in responses:
+        send_message(sender_id, responses[command], quick_replies=True)
     else:
-        send_message(sender_id, "أمر غير معروف", quick_replies=True)
+        send_message(sender_id, "⚠️ أمر غير معروف\n\nاستخدم /help لرؤية الأوامر المتاحة", quick_replies=True)
 
 # تشغيل الإعدادات عند البدء
 setup_menu()
