@@ -11,7 +11,7 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 🔑 التوكنات المضمنة مباشرة (للتجربة فقط)
+# 🔑 التوكنات المضمنة مباشرة
 PAGE_ACCESS_TOKEN = "EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD"
 VERIFY_TOKEN = "d51ee4e3183dbbd9a27b7d2c1af8c655"
 GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"
@@ -20,7 +20,7 @@ GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
-# 💾 تخزين المحادثات (24 ساعة)
+# 💾 تخزين المحادثات
 conversations = {}
 
 # 🎨 تصميم القوائم
@@ -99,8 +99,8 @@ def setup_menu():
     url = f"https://graph.facebook.com/v17.0/me/messenger_profile?access_token={PAGE_ACCESS_TOKEN}"
     requests.post(url, json=get_persistent_menu())
 
-# 🌐 الويب هوك
-@app.route('/', methods=['GET', 'POST'])
+# 🌐 الويب هوك - المسار المطلوب /webhook
+@app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
     if request.method == 'GET':
         if request.args.get('hub.verify_token') == VERIFY_TOKEN:
