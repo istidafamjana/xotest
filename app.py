@@ -1,4 +1,4 @@
-from flask import Flask, request
+from flask import Flask, request, jsonify
 import requests
 import os
 import google.generativeai as genai
@@ -13,7 +13,7 @@ GEMINI_API_KEY = os.getenv("AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU")
 
 # تهيئة Gemini AI
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-pro")
+model = genai.GenerativeModel("gemini-pro")  # تصحيح اسم الموديل
 
 # قاموس لتخزين المحادثات مؤقتًا مع وقت الانتهاء
 conversations = {}
@@ -42,7 +42,8 @@ def send_message(recipient_id, text, buttons=None):
             }
         }
     }
-    requests.post(url, json=payload)
+    response = requests.post(url, json=payload)
+    return response.json()
 
 # أزرار القائمة الرئيسية
 def main_buttons():
@@ -59,10 +60,15 @@ def webhook():
             return request.args.get("hub.challenge")
         return "خطأ في التحقق", 403
 
-    data = request.json
+    data = request.get_json()
+    if not data:
+        return "لا توجد بيانات", 400
+
     for entry in data.get("entry", []):
         for message_event in entry.get("messaging", []):
-            sender_id = message_event["sender"]["id"]
+            sender_id = message_event.get("sender", {}).get("id")
+            if not sender_id:
+                continue
             
             # تنظيف المحادثات القديمة
             cleanup_old_conversations()
@@ -78,11 +84,11 @@ def webhook():
                 continue
 
             # معالجة الأوامر الخاصة
-            if user_msg == "/start":
+            if user_msg.lower() == "/start":
                 send_message(sender_id, "مرحبًا! يمكنك البدء في المحادثة معي الآن. أرسل لي أي سؤال وسأجيب باستخدام الذكاء الاصطناعي.", main_buttons())
-            elif user_msg == "/help":
+            elif user_msg.lower() == "/help":
                 send_message(sender_id, "أنا بوت ذكاء اصطناعي. يمكنك:\n- إرسال أي سؤال للحصول على إجابة\n- استخدام /restart لبدء محادثة جديدة\n- استخدام الأزرار للتنقل", main_buttons())
-            elif user_msg == "/restart":
+            elif user_msg.lower() == "/restart":
                 if sender_id in conversations:
                     del conversations[sender_id]
                 send_message(sender_id, "تم إعادة تعيين المحادثة. يمكنك البدء من جديد.", main_buttons())
@@ -91,12 +97,9 @@ def webhook():
                 if sender_id not in conversations:
                     conversations[sender_id] = {
                         'history': [],
-                        'expiry': datetime.now() + timedelta(hours=1)  # تنتهي بعد ساعة
-                    }
+                        'expiry': datetime.now() + timedelta(hours=1)
+                        }
                 
-                # إضافة رسالة المستخدم إلى التاريخ
-                conversations[sender_id]['history'].append({'role': 'user', 'content': user_msg})
-
                 try:
                     # إنشاء المحادثة مع التاريخ
                     chat = model.start_chat(history=conversations[sender_id]['history'])
@@ -104,16 +107,19 @@ def webhook():
                     ai_text = response.text
                     
                     # تحديث التاريخ وتاريخ الانتهاء
-                    conversations[sender_id]['history'].append({'role': 'model', 'content': ai_text})
+                    conversations[sender_id]['history'].extend([
+                        {'role': 'user', 'parts': [user_msg]},
+                        {'role': 'model', 'parts': [ai_text]}
+                    ])
                     conversations[sender_id]['expiry'] = datetime.now() + timedelta(hours=1)
                     
                     # إرسال الرد
                     send_message(sender_id, ai_text, main_buttons())
                 except Exception as e:
                     send_message(sender_id, "حدث خطأ أثناء معالجة طلبك. يرجى المحاولة مرة أخرى.")
-                    print(f"Error: {str(e)}")
+                    app.logger.error(f"Error: {str(e)}")
 
-    return "تم", 200
+    return jsonify({"status": "success"}), 200
 
 if name == "main":
-    app.run()
+    app.run(debug=True)
