@@ -15,7 +15,7 @@ GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"  # مفتاح Gemini
 
 # ⚙️ تهيئة نموذج Gemini 1.5 Flash
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')  # النموذج المجاني
+model = genai.GenerativeModel('gemini-2.0-flash')  # النموذج المجاني
 
 # 💾 تخزين المحادثات (30 دقيقة)
 CONVERSATION_TIMEOUT = 30  # دقيقة
