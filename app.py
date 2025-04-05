@@ -222,4 +222,4 @@ def handle_image_message(sender_id, image_url):
         send_message(sender_id, "حدث خطأ في تحليل الصورة", buttons=True)
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(debug=True)
