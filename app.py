@@ -1,5 +1,240 @@
 from flask import Flask, request, jsonify
+import requestsfrom flask import Flask, request, jsonify
 import requests
+import google.generativeai as genai
+from datetime import datetime, timedelta
+import logging
+import tempfile
+import urllib.request
+import os
+
+app = Flask(__name__)
+
+# تكوين السجلات
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# مفاتيح الوصول (يجب استبدالها بمفاتيحك)
+PAGE_ACCESS_TOKEN = "YOUR_FACEBOOK_PAGE_ACCESS_TOKEN"
+VERIFY_TOKEN = "YOUR_VERIFY_TOKEN"
+GEMINI_API_KEY = "YOUR_GEMINI_API_KEY"
+
+# تهيئة نموذج Gemini المجاني
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-1.5-flash')
+
+# تخزين المحادثات
+conversations = {}
+
+def download_image(url):
+    """تحميل الصورة من الرابط المؤقت"""
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp_file:
+        urllib.request.urlretrieve(url, tmp_file.name)
+        return tmp_file.name
+
+def analyze_image(image_path, prompt=None):
+    """تحليل الصورة باستخدام Gemini"""
+    try:
+        img = genai.upload_file(image_path)
+        
+        if prompt:
+            response = model.generate_content([prompt, img])
+        else:
+            response = model.generate_content([
+                "حلل هذه الصورة بدقة وأجب بالعربية. اذكر:",
+                "1. محتوى الصورة الرئيسي",
+                "2. الألوان والعناصر البارزة",
+                "3. إذا كان فيها نص اقرأه",
+                "4. أي معلومات مفيدة يمكن استخلاصها",
+                img
+            ])
+        
+        os.unlink(image_path)
+        return response.text
+    except Exception as e:
+        logger.error(f"Error analyzing image: {str(e)}")
+        if os.path.exists(image_path):
+            os.unlink(image_path)
+        return None
+
+def get_welcome_screen():
+    """شاشة الترحيب مع الأزرار"""
+    return {
+        "attachment": {
+            "type": "template",
+            "payload": {
+                "template_type": "generic",
+                "elements": [{
+                    "title": "مرحبًا بك في بوت الذكاء الاصطناعي 🤖",
+                    "image_url": "https://example.com/ai-bot.jpg",
+                    "subtitle": "يمكنك إرسال أي نص أو صورة وسأساعدك في تحليلها",
+                    "buttons": [
+                        {
+                            "type": "postback",
+                            "title": "بدء المحادثة 🚀",
+                            "payload": "START_CMD"
+                        },
+                        {
+                            "type": "postback",
+                            "title": "المساعدة ℹ️",
+                            "payload": "HELP_CMD"
+                        }
+                    ]
+                }]
+            }
+        }
+    }
+
+def get_main_buttons():
+    """الأزرار الرئيسية"""
+    return [
+        {
+            "type": "postback",
+            "title": "المساعدة 📖",
+            "payload": "HELP_CMD"
+        },
+        {
+            "type": "postback",
+            "title": "إعادة البدء 🔄",
+            "payload": "RESTART_CMD"
+        },
+        {
+            "type": "web_url",
+            "title": "تواصل معنا 📩",
+            "url": "https://example.com/contact"
+        }
+    ]
+
+def send_message(recipient_id, message_text, buttons=None, welcome=False):
+    """إرسال رسالة إلى المستخدم"""
+    url = f"https://graph.facebook.com/v17.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
+    
+    if welcome:
+        payload = {
+            "recipient": {"id": recipient_id},
+            "message": get_welcome_screen()
+        }
+    else:
+        payload = {
+            "recipient": {"id": recipient_id},
+            "message": {"text": message_text}
+        }
+        
+        if buttons:
+            payload["message"] = {
+                "attachment": {
+                    "type": "template",
+                    "payload": {
+                        "template_type": "button",
+                        "text": message_text,
+                        "buttons": buttons
+                    }
+                }
+            }
+    
+    try:
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+    except Exception as e:
+        logger.error(f"Error sending message: {str(e)}")
+
+def handle_command(sender_id, command):
+    """معالجة الأوامر"""
+    if command == "START_CMD":
+        welcome_text = (
+            "مرحبًا بك! 👋 أنا بوت الذكاء الاصطناعي. يمكنني:\n\n"
+            "📝 - الإجابة على أسئلتك النصية\n"
+            "🖼️ - تحليل الصور ووصف محتواها\n\n"
+            "جرب إرسال سؤال أو صورة الآن!"
+        )
+        send_message(sender_id, welcome_text, get_main_buttons())
+        
+    elif command == "HELP_CMD":
+        help_text = "📋 الأوامر المتاحة:\n\n"
+        help_text += "🔹 بدء المحادثة - اضغط على زر 'بدء المحادثة'\n"
+        help_text += "🔹 إعادة البدء - اضغط على زر 'إعادة البدء'\n"
+        help_text += "🔹 المساعدة - اضغط على زر 'المساعدة'\n\n"
+        help_text += "يمكنك أيضًا إرسال:\n- أي سؤال نصي\n- صورة لتحليلها"
+        send_message(sender_id, help_text, get_main_buttons())
+        
+    elif command == "RESTART_CMD":
+        if sender_id in conversations:
+            del conversations[sender_id]
+        send_message(sender_id, "تم إعادة ضبط المحادثة بنجاح!", get_main_buttons())
+
+@app.route('/webhook', methods=['GET', 'POST'])
+def webhook():
+    """نقطة نهاية الويب هوك"""
+    if request.method == 'GET':
+        verify_token = request.args.get('hub.verify_token')
+        if verify_token == VERIFY_TOKEN:
+            return request.args.get('hub.challenge')
+        return "Verification failed", 403
+    
+    data = request.get_json()
+    
+    try:
+        for entry in data.get('entry', []):
+            for event in entry.get('messaging', []):
+                sender_id = event['sender']['id']
+                
+                # معالجة Postback (أزرار)
+                if 'postback' in event:
+                    handle_command(sender_id, event['postback']['payload'])
+                    continue
+                    
+                # معالجة الرسائل
+                if 'message' in event:
+                    message = event['message']
+                    
+                    # معالجة الصور
+                    if 'attachments' in message:
+                        for attachment in message['attachments']:
+                            if attachment['type'] == 'image':
+                                image_url = attachment['payload']['url']
+                                try:
+                                    image_path = download_image(image_url)
+                                    analysis = analyze_image(image_path)
+                                    if analysis:
+                                        send_message(sender_id, f"📸 تحليل الصورة:\n\n{analysis}")
+                                    else:
+                                        send_message(sender_id, "عذرًا، لم أستطع تحليل هذه الصورة")
+                                except Exception as e:
+                                    logger.error(f"Image processing error: {str(e)}")
+                                    send_message(sender_id, "حدث خطأ أثناء معالجة الصورة")
+                        continue
+                    
+                    # معالجة النصوص
+                    if 'text' in message:
+                        user_message = message['text']
+                        
+                        # معالجة الأوامر النصية
+                        if user_message.lower() in ['ابدأ', 'بدء', 'start']:
+                            handle_command(sender_id, "START_CMD")
+                        elif user_message.lower() in ['مساعدة', 'مساعدة', 'help']:
+                            handle_command(sender_id, "HELP_CMD")
+                        elif user_message.lower() in ['إعادة', 'اعادة', 'restart']:
+                            handle_command(sender_id, "RESTART_CMD")
+                        else:
+                            # معالجة الأسئلة النصية
+                            try:
+                                response = model.generate_content(user_message)
+                                send_message(sender_id, response.text, get_main_buttons())
+                            except Exception as e:
+                                logger.error(f"AI Error: {str(e)}")
+                                send_message(sender_id, "عذرًا، حدث خطأ أثناء معالجة سؤالك")
+    
+    except Exception as e:
+        logger.error(f"Webhook Error: {str(e)}")
+    
+    return jsonify({"status": "success"}), 200
+
+@app.route('/')
+def home():
+    return "Facebook Messenger AI Bot is Running!"
+
+if __name__ == '__main__':
+    app.run()
 import google.generativeai as genai
 from datetime import datetime, timedelta
 import logging
