@@ -10,7 +10,7 @@ VERIFY_TOKEN = os.getenv("d51ee4e3183dbbd9a27b7d2c1af8c655")
 GEMINI_API_KEY = os.getenv("AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU")
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-pro")
+model = genai.GenerativeModel("gemini-1.5-flash")
 
 # قاموس لتخزين المحادثات مؤقتًا
 conversations = {}
