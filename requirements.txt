@@ -1,7 +1,5 @@
-flask
-requests
-google-generativeai
-google-auth
-Pillow
+flask 
+requests 
+google-generativeai 
+pillow 
 python-dotenv
-urllib3
