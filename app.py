@@ -96,6 +96,7 @@ def webhook():
                 
                 # إضافة رسالة المستخدم إلى التاريخ
                 conversations[sender_id]['history'].append({'role': 'user', 'content': user_msg})
+
                 try:
                     # إنشاء المحادثة مع التاريخ
                     chat = model.start_chat(history=conversations[sender_id]['history'])
