@@ -46,7 +46,7 @@ def setup_messenger_profile():
                     {
                         "type": "web_url",
                         "title": "🌐 الموقع الرسمي",
-                        "url": "https://yourwebsite.com",
+                        "url": "https://oth-ia.vercel.app/",
                         "webview_height_ratio": "full"
                     },
                     {
@@ -63,7 +63,7 @@ def setup_messenger_profile():
                 ]
             }
         ],
-        "whitelisted_domains": ["https://yourdomain.com"],
+        "whitelisted_domains": ["https://oth-ia.vercel.app/"],
         "greeting": [
             {
                 "locale": "default",
@@ -159,7 +159,7 @@ def get_chat_context(user_id):
 def handle_new_user(sender_id, user_id):
     """معالجة المستخدم الجديد مع رسالة ترحيبية متكاملة"""
     # إرسال صورة الترحيب
-    welcome_image_url = "https://example.com/welcome-bot-image.jpg"  # استبدل برابط صورتك
+    welcome_image_url = "https://j.top4top.io/p_3382ckcex0.jpg"  # استبدل برابط صورتك
     send_message(sender_id, "", image_url=welcome_image_url)
     
     # إرسال رسالة الترحيب مع الأزرار
@@ -172,6 +172,7 @@ def handle_new_user(sender_id, user_id):
     • تذكر سياق المحادثة
     
     💡 اختر أحد الخيارات أدناه للبدء:
+  ✔️ إستعمل  messanger لتضهر الازرار 
     """
     
     send_message(sender_id, welcome_msg, buttons=[
@@ -188,7 +189,7 @@ def handle_new_user(sender_id, user_id):
         {
             "type": "web_url",
             "title": "📞 تواصل معنا",
-            "url": "https://instagram.com/yourpage"  # أو رابط الاتصال الخاص بك
+            "url": "https://instagram.com/mx.fo"  # أو رابط الاتصال الخاص بك
         }
     ])
     
@@ -206,12 +207,12 @@ def handle_command(sender_id, user_id, command):
             {
                 "type": "web_url",
                 "title": "🌐 زيارة الموقع",
-                "url": "https://yourwebsite.com"
+                "url": "https://oth-ia.vercel.app/"
             },
             {
                 "type": "web_url",
                 "title": "📸 متابعة الإنستجرام",
-                "url": "https://instagram.com/yourpage"
+                "url": "https://instagram.com/mx.fo"
             }
         ])
         
@@ -241,7 +242,7 @@ def handle_command(sender_id, user_id, command):
             {
                 "type": "web_url",
                 "title": "🌐 الموقع الرسمي",
-                "url": "https://yourwebsite.com"
+                "url": "https://oth-ia.vercel.app/"
             }
         ])
 
