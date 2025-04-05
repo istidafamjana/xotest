@@ -46,7 +46,7 @@ def setup_messenger_profile():
                     {
                         "type": "web_url",
                         "title": "🌐 الموقع الرسمي",
-                        "url": "https://oth-ia.vercel.app/",
+                        "url": "https://oth-ia.vercel.app",
                         "webview_height_ratio": "full"
                     },
                     {
@@ -63,7 +63,7 @@ def setup_messenger_profile():
                 ]
             }
         ],
-        "whitelisted_domains": ["https://oth-ia.vercel.app/"],
+        "whitelisted_domains": ["https://oth-ia.vercel.app"],
         "greeting": [
             {
                 "locale": "default",
@@ -207,7 +207,7 @@ def handle_command(sender_id, user_id, command):
             {
                 "type": "web_url",
                 "title": "🌐 زيارة الموقع",
-                "url": "https://oth-ia.vercel.app/"
+                "url": "https://oth-ia.vercel.app"
             },
             {
                 "type": "web_url",
@@ -237,12 +237,12 @@ def handle_command(sender_id, user_id, command):
             {
                 "type": "web_url",
                 "title": "📸 إنستجرام",
-                "url": "https://instagram.com/yourpage"
+                "url": "https://instagram.com/mx.fo"
             },
             {
                 "type": "web_url",
                 "title": "🌐 الموقع الرسمي",
-                "url": "https://oth-ia.vercel.app/"
+                "url": "https://oth-ia.vercel.app"
             }
         ])
 
@@ -322,7 +322,7 @@ def webhook():
                                 {
                                     "type": "web_url",
                                     "title": "الموقع الرسمي",
-                                    "url": "https://yourwebsite.com"
+                                    "url": "https://oth-ia.vercel.app"
                                 }
                             ])
                         elif user_message.lower() in ['شرح', 'info']:
