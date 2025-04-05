@@ -6,50 +6,72 @@ app = Flask(__name__)
 PAGE_ACCESS_TOKEN = "EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD"
 VERIFY_TOKEN = "d51ee4e3183dbbd9a27b7d2c1af8c655"
 
-waiting_users = []
-games = {}
+players_queue = []
+active_games = {}
 
-def send_message(recipient_id, message_text):
-    url = 'https://graph.facebook.com/v16.0/me/messages'
-    headers = {'Content-Type': 'application/json'}
+board_template = lambda b: f"""{b[0]} | {b[1]} | {b[2]}
+---+---+---
+{b[3]} | {b[4]} | {b[5]}
+---+---+---
+{b[6]} | {b[7]} | {b[8]}
+"""
+
+def send_message(recipient_id, text):
     data = {
-        'recipient': {'id': recipient_id},
-        'message': {'text': message_text},
-        'messaging_type': 'RESPONSE',
-        'access_token': PAGE_ACCESS_TOKEN
+        "recipient": {"id": recipient_id},
+        "message": {"text": text},
+        "messaging_type": "RESPONSE",
+        "access_token": PAGE_ACCESS_TOKEN
     }
-    requests.post(url, headers=headers, json=data)
+    requests.post("https://graph.facebook.com/v16.0/me/messages", json=data)
 
-@app.route("/webhook", methods=['GET', 'POST'])
+def send_quick_reply(recipient_id, text):
+    data = {
+        "recipient": {"id": recipient_id},
+        "message": {
+            "text": text,
+            "quick_replies": [
+                {"content_type": "text", "title": "✖️", "payload": "XO_X"},
+                {"content_type": "text", "title": "⭕️", "payload": "XO_O"},
+                {"content_type": "text", "title": "تبديل لاعب", "payload": "CHANGE_PLAYER"},
+                {"content_type": "text", "title": "اللعب مع AI", "payload": "PLAY_AI"}
+            ]
+        },
+        "messaging_type": "RESPONSE",
+        "access_token": PAGE_ACCESS_TOKEN
+    }
+    requests.post('https://graph.facebook.com/v16.0/me/messages', json=data)
+
+def get_ai_reply(text):
+    try:
+        url = f"https://dev-pycodz-blackbox.pantheonsite.io/DEvZ44d/aii.php?text={text}"
+        res = requests.get(url)
+        return res.text if res.status_code == 200 else "حدث خطأ مع الذكاء الاصطناعي."
+    except:
+        return "خطأ في الاتصال بـ AI."
+
+@app.route("/webhook", methods=["GET", "POST"])
 def webhook():
-    if request.method == 'GET':
-        token_sent = request.args.get("hub.verify_token")
-        return request.args.get("hub.challenge") if token_sent == VERIFY_TOKEN else 'Invalid verification token'
-    
-    if request.method == 'POST':
-        data = request.get_json()
-        for entry in data.get("entry", []):
-            for messaging_event in entry.get("messaging", []):
-                sender_id = messaging_event["sender"]["id"]
-                if "message" in messaging_event:
-                    handle_message(sender_id, messaging_event["message"].get("text", ""))
-        return "ok", 200
-
-def handle_message(sender_id, message_text):
-    if sender_id in games:
-        opponent_id = games[sender_id]
-        send_message(opponent_id, f"خصمك يقول: {message_text}")
-    else:
-        if sender_id not in waiting_users:
-            waiting_users.append(sender_id)
-            send_message(sender_id, "تم تسجيلك. نبحث عن خصم...")
-        if len(waiting_users) >= 2:
-            player1 = waiting_users.pop(0)
-            player2 = waiting_users.pop(0)
-            games[player1] = player2
-            games[player2] = player1
-            send_message(player1, "تم العثور على خصم! ابدأ اللعب الآن.")
-            send_message(player2, "تم العثور على خصم! ابدأ اللعب الآن.")
+    if request.method == "GET":
+        if request.args.get("hub.verify_token") == VERIFY_TOKEN:
+            return request.args.get("hub.challenge")
+        return "Invalid verification token"
+    elif request.method == "POST":
+        data = request.json
+        for entry in data["entry"]:
+            for msg_event in entry["messaging"]:
+                sender_id = msg_event["sender"]["id"]
+                if "message" in msg_event:
+                    message_text = msg_event["message"].get("text", "")
+                    if message_text not in ["✖️", "⭕️"]:
+                        send_message(sender_id, "الرجاء إرسال ✖️ أو ⭕️ فقط.")
+                        send_quick_reply(sender_id, "اختر رمزًا للعب:")
+                    else:
+                        send_message(sender_id, f"تم تسجيل: {message_text}")
+                elif "postback" in msg_event:
+                    payload = msg_event["postback"]["payload"]
+                    send_message(sender_id, f"تم اختيار: {payload}")
+        return "ok"
 
 if __name__ == "__main__":
     app.run()
