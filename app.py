@@ -1,32 +1,34 @@
 from flask import Flask, request, jsonify
-import httpx  # استبدال requests بـ httpx
+import requests
 import google.generativeai as genai
 from datetime import datetime, timedelta
 import logging
+from io import BytesIO
 import asyncio
 from threading import Thread
 import time
 
 app = Flask(__name__)
 
-# 🔧 تهيئة التسجيل
+# 🔧 Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 🔑 التوكنات
+# 🔑 Tokens and configuration
 PAGE_ACCESS_TOKEN = "EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD"
 VERIFY_TOKEN = "d51ee4e3183dbbd9a27b7d2c1af8c655"
 GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"
-MY_INSTAGRAM = "https://www.instagram.com/your_username"
+MY_INSTAGRAM = "https://www.instagram.com/your_username"  # Replace with your Instagram
 
-# ⚙️ تهيئة نموذج Gemini
+# ⚙️ Initialize Gemini model
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-1.5-flash-latest')
 
-# 💾 تخزين المحادثات
+# 💾 Conversation storage (3 hours timeout)
+CONVERSATION_TIMEOUT = timedelta(hours=3)
 conversations = {}
 
-# 🎨 تصميم القوائم
+# 🎨 Menu design
 def get_persistent_menu():
     return {
         "persistent_menu": [
@@ -36,105 +38,145 @@ def get_persistent_menu():
                 "call_to_actions": [
                     {
                         "type": "postback",
-                        "title": "🏠 ابدأ /start",
+                        "title": "🏠 Start /start",
                         "payload": "/start"
                     },
                     {
                         "type": "postback",
-                        "title": "❓ مساعدة /help",
+                        "title": "❓ Help /help",
                         "payload": "/help"
                     },
                     {
                         "type": "web_url",
-                        "title": "📱 تواصل /contact",
-                        "url": MY_INSTAGRAM
+                        "title": "📱 Contact /contact",
+                        "url": MY_INSTAGRAM,
+                        "webview_height_ratio": "full"
                     }
                 ]
             }
         ]
     }
 
-# ✉️ إرسال الرسائل باستخدام httpx
-async def send_message_async(recipient_id, text):
+def get_quick_replies():
+    return [
+        {"content_type": "text", "title": "🔍 Start", "payload": "/start"},
+        {"content_type": "text", "title": "🆘 Help", "payload": "/help"},
+        {"content_type": "text", "title": "🔄 Restart", "payload": "/restart"}
+    ]
+
+# ✉️ Message sending with improved error handling
+def send_message(recipient_id, text, quick_replies=False):
     url = f"https://graph.facebook.com/v17.0/me/messages"
-    headers = {
-        "Content-Type": "application/json"
-    }
-    params = {
-        "access_token": PAGE_ACCESS_TOKEN
-    }
+    params = {"access_token": PAGE_ACCESS_TOKEN}
+    
+    # Split long messages
+    max_length = 1900  # Slightly below 2000 for safety
+    if len(text) > max_length:
+        parts = [text[i:i+max_length] for i in range(0, len(text), max_length)]
+        for part in parts:
+            payload = {
+                "recipient": {"id": recipient_id},
+                "message": {"text": part}
+            }
+            try:
+                response = requests.post(url, params=params, json=payload, timeout=10)
+                response.raise_for_status()
+                time.sleep(0.3)
+            except Exception as e:
+                logger.error(f"Failed to send message part: {e}")
+        return
+    
     payload = {
         "recipient": {"id": recipient_id},
-        "message": {"text": text}
+        "message": {
+            "text": text,
+            "quick_replies": get_quick_replies() if quick_replies else []
+        }
     }
     
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            response = await client.post(
-                url,
-                headers=headers,
-                params=params,
-                json=payload
-            )
-            response.raise_for_status()
-            return True
-        except Exception as e:
-            logger.error(f"فشل الإرسال: {e}")
-            return False
+    try:
+        response = requests.post(url, params=params, json=payload, timeout=10)
+        response.raise_for_status()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send message: {e}")
+        return False
 
-# 🖼️ معالجة الصور باستخدام httpx
+# 🖼️ Enhanced image analysis with better error handling
 async def analyze_image_async(image_url):
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            # تحميل الصورة
-            image_response = await client.get(image_url)
-            image_response.raise_for_status()
-            
-            # تحليل الصورة
-            prompt = """حلل هذه الصورة:
-1. صف المحتوى الرئيسي
-2. اذكر 3 تفاصيل مهمة
-3. اقترح حلولاً لأي مشاكل"""
-            
-            response = await asyncio.to_thread(
-                model.generate_content,
-                [prompt, image_response.content],
-                generation_config={"temperature": 0.2, "max_output_tokens": 800}
-            )
-            return response.text
-    except Exception as e:
-        logger.error(f"خطأ في تحليل الصورة: {e}")
-        return None
+        logger.info(f"Starting image analysis from URL: {image_url}")
+        
+        # Download image with improved headers
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = await asyncio.to_thread(
+            requests.get, 
+            image_url, 
+            headers=headers, 
+            timeout=20
+        )
+        response.raise_for_status()
+        
+        # Verify content type
+        if not response.headers.get('Content-Type', '').startswith('image/'):
+            raise ValueError("File is not an image")
+        
+        # Analyze with clear instructions
+        prompt = """Analyze this image and provide:
+1. Brief description (1 sentence)
+2. 3 potential issues
+3. 3 suggested solutions
 
-# 🌐 إعداد القائمة الدائمة
-async def setup_menu_async():
+Keep response concise and in bullet points"""
+        
+        response = model.generate_content(
+            [prompt, response.content],
+            generation_config={
+                "temperature": 0.2,
+                "max_output_tokens": 600  # Keep responses shorter
+            }
+        )
+        return response.text
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Image download error: {e}")
+        return "⚠️ Couldn't download image. Please check:\n- URL is valid\n- Image isn't too large\n- Try again later"
+    except Exception as e:
+        logger.error(f"Image analysis error: {e}")
+        return "⚠️ Unexpected error analyzing image. Please try another image."
+
+# 🌐 Setup persistent menu
+def setup_menu():
     url = f"https://graph.facebook.com/v17.0/me/messenger_profile"
     params = {"access_token": PAGE_ACCESS_TOKEN}
     
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.post(
-                url,
-                params=params,
-                json=get_persistent_menu()
-            )
-            response.raise_for_status()
-            logger.info("تم إعداد القائمة الدائمة بنجاح")
-        except Exception as e:
-            logger.error(f"فشل إعداد القائمة: {e}")
+    try:
+        response = requests.post(url, params=params, json=get_persistent_menu())
+        response.raise_for_status()
+        logger.info("✅ Persistent menu setup successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to setup menu: {e}")
 
-# 🌐 الويب هوك
+# 🌐 Webhook endpoint
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
     if request.method == 'GET':
-        if request.args.get('hub.verify_token') == VERIFY_TOKEN:
+        verify_token = request.args.get('hub.verify_token')
+        if verify_token == VERIFY_TOKEN:
+            logger.info("✅ Webhook verified")
             return request.args.get('hub.challenge')
+        logger.error("❌ Invalid verify token")
         return "Verification failed", 403
     
     data = request.get_json()
-    logger.info(f"بيانات الواردة: {data}")
+    if not data:
+        logger.error("❌ Empty request data")
+        return jsonify({"status": "error", "message": "No data"}), 400
     
-    # تشغيل المعالجة في خيط منفصل
+    logger.info(f"📩 Received data: {data}")
+    
+    # Process in background thread
     Thread(target=process_webhook_data, args=(data,)).start()
     
     return jsonify({"status": "success"}), 200
@@ -143,66 +185,149 @@ def process_webhook_data(data):
     try:
         for entry in data.get('entry', []):
             for event in entry.get('messaging', []):
-                sender_id = event['sender']['id']
+                sender_id = event.get('sender', {}).get('id')
+                if not sender_id:
+                    continue
                 
-                # تحديث وقت المحادثة
-                conversations[sender_id] = datetime.now() + timedelta(hours=3)
+                # Update conversation timestamp
+                conversations[sender_id] = {
+                    "last_active": datetime.now(),
+                    "expiry": datetime.now() + CONVERSATION_TIMEOUT
+                }
                 
+                # Handle different message types
                 if 'message' in event:
-                    message = event['message']
-                    if 'text' in message:
-                        asyncio.run(handle_text_async(sender_id, message['text']))
-                    elif 'attachments' in message:
-                        for att in message['attachments']:
-                            if att['type'] == 'image':
-                                asyncio.run(handle_image_async(sender_id, att['payload']['url']))
-                
+                    handle_message(sender_id, event['message'])
                 elif 'postback' in event:
-                    asyncio.run(handle_postback_async(sender_id, event['postback']['payload']))
+                    handle_postback(sender_id, event['postback']['payload'])
     
     except Exception as e:
-        logger.error(f"خطأ في معالجة البيانات: {e}")
+        logger.error(f"❌ Error processing webhook: {e}")
 
-async def handle_text_async(sender_id, text):
-    text = text.strip().lower()
+def handle_message(sender_id, message):
+    if 'text' in message:
+        handle_text(sender_id, message['text'])
+    elif 'attachments' in message:
+        for att in message['attachments']:
+            if att['type'] == 'image':
+                handle_image(sender_id, att['payload']['url'])
+
+def handle_text(sender_id, text):
+    text = text.strip()
+    logger.info(f"📝 Processing text from {sender_id}: {text}")
     
-    if text.startswith('/'):
-        await handle_command_async(sender_id, text)
+    if text.lower().startswith('/'):
+        handle_command(sender_id, text.lower())
     else:
         try:
-            response = await asyncio.to_thread(
-                model.generate_content,
-                f"السؤال: {text}\n\nأجب بشكل مختصر ومنظم",
-                generation_config={"temperature": 0.3, "max_output_tokens": 1000}
+            # Get conversation context
+            context = ""
+            if sender_id in conversations and "history" in conversations[sender_id]:
+                context = "\n".join(
+                    f"{msg['role']}: {msg['content']}" 
+                    for msg in conversations[sender_id]["history"][-3:]
+                )
+            
+            prompt = f"""Previous conversation:
+{context}
+
+New question: {text}
+
+Please respond concisely with bullet points"""
+            
+            response = model.generate_content(
+                prompt,
+                generation_config={
+                    "temperature": 0.3,
+                    "max_output_tokens": 800
+                }
             )
-            await send_message_async(sender_id, f"📝 الإجابة:\n\n{response.text}")
+            reply = response.text
+            
+            # Update conversation history
+            if sender_id not in conversations:
+                conversations[sender_id] = {
+                    "history": [],
+                    "expiry": datetime.now() + CONVERSATION_TIMEOUT
+                }
+            
+            conversations[sender_id]["history"].append({
+                "role": "user",
+                "content": text,
+                "timestamp": datetime.now()
+            })
+            conversations[sender_id]["history"].append({
+                "role": "bot",
+                "content": reply,
+                "timestamp": datetime.now()
+            })
+            
+            send_message(sender_id, reply)
         except Exception as e:
-            logger.error(f"خطأ في معالجة النص: {e}")
-            await send_message_async(sender_id, "⚠️ حدث خطأ، يرجى المحاولة لاحقًا")
+            logger.error(f"❌ Text processing error: {e}")
+            send_message(sender_id, "⚠️ Error processing your request. Please try again.")
 
-async def handle_image_async(sender_id, image_url):
-    await send_message_async(sender_id, "⏳ جاري تحليل الصورة...")
-    analysis = await analyze_image_async(image_url)
+def handle_image(sender_id, image_url):
+    logger.info(f"🖼️ Processing image from {sender_id}")
+    send_message(sender_id, "🔍 Analyzing image, please wait...")
     
-    if analysis:
-        await send_message_async(sender_id, f"📸 نتائج التحليل:\n\n{analysis}")
+    analysis = asyncio.run(analyze_image_async(image_url))
+    
+    if analysis and not analysis.startswith("⚠️"):
+        # Store analysis in conversation history
+        if sender_id not in conversations:
+            conversations[sender_id] = {
+                "history": [],
+                "expiry": datetime.now() + CONVERSATION_TIMEOUT
+            }
+        
+        conversations[sender_id]["history"].append({
+            "role": "image",
+            "content": image_url,
+            "analysis": analysis,
+            "timestamp": datetime.now()
+        })
+        
+        send_message(sender_id, f"📊 Analysis results:\n\n{analysis}")
     else:
-        await send_message_async(sender_id, "⚠️ لم أستطع تحليل الصورة، يرجى إرسال صورة أوضح")
+        send_message(sender_id, analysis if analysis else "⚠️ Couldn't analyze image. Please send a clearer image.")
 
-async def handle_command_async(sender_id, command):
-    commands = {
-        "/start": "🚀 مرحباً! أنا بوت الذكاء الاصطناعي. استخدم الأوامر:\n/help - للمساعدة\n/contact - للتواصل",
-        "/help": "📚 الأوامر المتاحة:\n\n/start - بدء المحادثة\n/help - هذه التعليمات\n/contact - تواصل مع المطور",
-        "/contact": f"📱 للتواصل مع المطور:\n\nInstagram: {MY_INSTAGRAM}"
+def handle_command(sender_id, command):
+    command_responses = {
+        "/start": "🚀 Welcome! I'm your AI assistant. You can:\n- Ask me anything\n- Send images for analysis\n- Use the commands below",
+        "/help": "📋 Available commands:\n\n/start - Start new chat\n/help - Show this help\n/contact - Contact developer\n/restart - Reset conversation",
+        "/contact": f"📱 Contact the developer:\n\nInstagram: {MY_INSTAGRAM}\n\nI'll respond as soon as possible!",
+        "/restart": "🔄 Conversation reset\n\nYour chat history has been cleared"
     }
     
-    if command in commands:
-        await send_message_async(sender_id, commands[command])
+    if command in command_responses:
+        send_message(sender_id, command_responses[command])
     else:
-        await send_message_async(sender_id, "⚠️ أمر غير معروف")
+        send_message(sender_id, "⚠️ Unknown command. Use /help to see available commands")
 
-# تشغيل الإعدادات الأولية
-asyncio.run(setup_menu_async())
+# Cleanup old conversations
+def cleanup_old_conversations():
+    while True:
+        try:
+            now = datetime.now()
+            expired = [uid for uid, conv in conversations.items() 
+                      if conv['expiry'] < now]
+            
+            for uid in expired:
+                del conversations[uid]
+                logger.info(f"🧹 Cleaned expired conversation for {uid}")
+            
+            time.sleep(3600)  # Run hourly
+        except Exception as e:
+            logger.error(f"❌ Cleanup error: {e}")
+            time.sleep(60)
+
+# Start cleanup thread
+cleanup_thread = Thread(target=cleanup_old_conversations, daemon=True)
+cleanup_thread.start()
+
+# Initial setup
+setup_menu()
 
 if __name__ == '__main__':
     app.run(threaded=True)
