@@ -13,7 +13,7 @@ GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"
 
 # تهيئة Gemini AI
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")  # تصحيح اسم الموديل
+model = genai.GenerativeModel("gemini-2.0-flash")  # تصحيح اسم الموديل
 
 # قاموس لتخزين المحادثات مؤقتًا مع وقت الانتهاء
 conversations = {}
