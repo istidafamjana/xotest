@@ -3,6 +3,9 @@ import requests
 import google.generativeai as genai
 from datetime import datetime, timedelta
 import logging
+from io import BytesIO
+from PIL import Image
+import os
 
 app = Flask(__name__)
 
@@ -10,53 +13,47 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 🔑 التوكنات والمفاتيح (تأكد من صحتها)
-PAGE_ACCESS_TOKEN = "EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD"
-VERIFY_TOKEN = "d51ee4e3183dbbd9a27b7d2c1af8c655"
-GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"
+# 🔑 التوكنات والمفاتيح
+PAGE_ACCESS_TOKEN = "EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD"  # توكن صفحتك
+VERIFY_TOKEN = "d51ee4e3183dbbd9a27b7d2c1af8c655"  # توكن التحقق
+GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"  # مفتاح Gemini
 
 # ⚙️ تهيئة نموذج Gemini
-try:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')  # التحديث للإصدار الصحيح
-    logger.info("✅ تم تهيئة نموذج Gemini بنجاح")
-except Exception as e:
-    logger.error(f"❌ فشل تهيئة Gemini: {e}")
-    raise
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-1.5-flash')
 
-# 💾 تخزين المحادثات (30 دقيقة)
-CONVERSATION_TIMEOUT = timedelta(minutes=30)
+# 💾 تخزين المحادثات (24 ساعة)
+CONVERSATION_TIMEOUT = timedelta(hours=24)
 conversations = {}
 
-# 🎨 واجهة الترحيب
-def get_welcome_screen():
+# 🎨 تصميم القوائم والأزرار
+def get_persistent_menu():
     return {
-        "attachment": {
-            "type": "template",
-            "payload": {
-                "template_type": "generic",
-                "elements": [{
-                    "title": "مرحبًا بك في بوت الذكاء الاصطناعي! 🤖",
-                    "image_url": "https://l.top4top.io/p_3056965410.png",
-                    "subtitle": "يمكنك طرح أي سؤال وسأساعدك بالإجابة باستخدام Gemini 1.5 Flash",
-                    "buttons": [
-                        {
-                            "type": "postback",
-                            "title": "🚀 ابدأ المحادثة",
-                            "payload": "/start"
-                        },
-                        {
-                            "type": "postback",
-                            "title": "ℹ️ الأوامر",
-                            "payload": "/help"
-                        }
-                    ]
-                }]
+        "persistent_menu": [
+            {
+                "locale": "default",
+                "composer_input_disabled": False,
+                "call_to_actions": [
+                    {
+                        "type": "postback",
+                        "title": "🏠 القائمة الرئيسية",
+                        "payload": "/start"
+                    },
+                    {
+                        "type": "postback",
+                        "title": "❓ المساعدة",
+                        "payload": "/help"
+                    },
+                    {
+                        "type": "postback",
+                        "title": "🔄 إعادة البدء",
+                        "payload": "/restart"
+                    }
+                ]
             }
-        }
+        ]
     }
 
-# 🎛 أزرار القائمة
 def get_main_buttons():
     return [
         {"type": "postback", "title": "📖 المساعدة", "payload": "/help"},
@@ -65,40 +62,51 @@ def get_main_buttons():
     ]
 
 # ✉️ إرسال الرسائل
-def send_message(recipient_id, text, buttons=False, welcome=False):
+def send_message(recipient_id, text, buttons=False, image_url=None):
     url = f"https://graph.facebook.com/v17.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
     
-    payload = {
-        "recipient": {"id": recipient_id},
-        "message": get_welcome_screen() if welcome else {"text": text}
-    }
-    
-    if buttons and not welcome:
-        payload["message"] = {
-            "attachment": {
-                "type": "template",
-                "payload": {
-                    "template_type": "button",
-                    "text": text,
-                    "buttons": get_main_buttons()
+    if image_url:
+        payload = {
+            "recipient": {"id": recipent_id},
+            "message": {
+                "attachment": {
+                    "type": "image",
+                    "payload": {"url": image_url, "is_reusable": True}
                 }
             }
         }
+    else:
+        payload = {
+            "recipient": {"id": recipent_id},
+            "message": {"text": text}
+        }
+        
+        if buttons:
+            payload["message"]["quick_replies"] = get_main_buttons()
     
     try:
-        response = requests.post(url, json=payload, timeout=10)
+        response = requests.post(url, json=payload)
         response.raise_for_status()
-        logger.info(f"تم إرسال رسالة لـ {recipient_id}")
     except Exception as e:
-        logger.error(f"فشل إرسال الرسالة: {e}")
+        logger.error(f"فشل الإرسال: {e}")
+
+# 🖼️ معالجة الصور
+def process_image(image_url):
+    try:
+        response = requests.get(image_url)
+        img = Image.open(BytesIO(response.content))
+        return img
+    except Exception as e:
+        logger.error(f"خطأ في معالجة الصورة: {e}")
+        return None
 
 # 🎚 معالجة الأوامر
 def handle_command(sender_id, command):
     commands = {
-        "/start": "مرحبًا! أنا بوت الذكاء الاصطناعي. اسألني أي شيء!\n\nاستخدم /help للمساعدة.",
-        "/help": "📜 الأوامر:\n/start - بدء محادثة\n/help - هذه التعليمات\n/restart - بدء جديد\n/about - معلومات البوت",
-        "/about": "🤖 البوت:\nالإصدار: 2.0\nالنموذج: Gemini 1.5 Flash\nالميزات: إجابات ذكية، دعم متعدد اللغات",
-        "/restart": "تم إعادة الضبط. المحادثات تحذف بعد 30 دقيقة من عدم النشاط."
+        "/start": "مرحبًا بك! أنا بوت الذكاء الاصطناعي. يمكنك:\n- إرسال أي سؤال\n- إرسال صور لتحليلها\n- استخدام الأوامر أدناه",
+        "/help": "📜 الأوامر:\n/start - بدء المحادثة\n/help - المساعدة\n/restart - بدء جديد\n/about - معلومات البوت",
+        "/about": "🤖 البوت:\nالإصدار: 3.0\nالنموذج: Gemini 1.5 Flash\nيدعم النصوص والصور",
+        "/restart": "تم إعادة ضبط المحادثة. يمكنك البدء من جديد!"
     }
     
     if command == "/restart" and sender_id in conversations:
@@ -106,47 +114,56 @@ def handle_command(sender_id, command):
     
     send_message(sender_id, commands[command], buttons=True)
 
+# 🌐 إعداد القائمة الدائمة
+@app.before_first_request
+def setup_persistent_menu():
+    url = f"https://graph.facebook.com/v17.0/me/messenger_profile?access_token={PAGE_ACCESS_TOKEN}"
+    try:
+        response = requests.post(url, json=get_persistent_menu())
+        response.raise_for_status()
+        logger.info("تم إعداد القائمة الدائمة بنجاح")
+    except Exception as e:
+        logger.error(f"فشل إعداد القائمة: {e}")
+
 # 🌐 الويب هوك
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
     if request.method == 'GET':
         if request.args.get('hub.verify_token') == VERIFY_TOKEN:
-            logger.info("تم التحقق من الويب هوك بنجاح")
             return request.args.get('hub.challenge')
-        logger.error("توكن التحقق غير صحيح")
         return "Verification failed", 403
     
+    data = request.get_json()
+    logger.debug(f"البيانات الواردة: {data}")
+    
     try:
-        data = request.get_json()
-        logger.debug(f"البيانات الواردة: {data}")
-        
         for entry in data.get('entry', []):
             for event in entry.get('messaging', []):
                 sender_id = event['sender']['id']
                 
-                # تحديث وقت المحادثة
-                conversations[sender_id] = {
-                    "last_active": datetime.now(),
-                    "expiry": datetime.now() + CONVERSATION_TIMEOUT
-                }
+                # تحديث/إنشاء محادثة
+                if sender_id not in conversations:
+                    conversations[sender_id] = {
+                        "history": [],
+                        "expiry": datetime.now() + CONVERSATION_TIMEOUT
+                    }
+                else:
+                    conversations[sender_id]["expiry"] = datetime.now() + CONVERSATION_TIMEOUT
                 
                 # معالجة الرسائل
-                if 'postback' in event:
-                    payload = event['postback'].get('payload')
-                    if payload == "GET_STARTED":
-                        handle_command(sender_id, "/start")
-                    elif payload:
-                        handle_command(sender_id, payload.lower())
-                
-                elif 'message' in event:
+                if 'message' in event:
                     message = event['message']
+                    
                     if 'text' in message:
-                        try:
-                            response = model.generate_content(message['text'])
-                            send_message(sender_id, response.text, buttons=True)
-                        except Exception as e:
-                            logger.error(f"خطأ في توليد الرد: {e}")
-                            send_message(sender_id, "حدث خطأ في المعالجة", buttons=True)
+                        handle_text_message(sender_id, message['text'])
+                    
+                    elif 'attachments' in message:
+                        for attachment in message['attachments']:
+                            if attachment['type'] == 'image':
+                                handle_image_message(sender_id, attachment['payload']['url'])
+                
+                elif 'postback' in event:
+                    handle_command(sender_id, event['postback']['payload'])
     
     except Exception as e:
         logger.error(f"خطأ في الويب هوك: {e}")
@@ -154,5 +171,55 @@ def webhook():
     
     return jsonify({"status": "success"}), 200
 
+def handle_text_message(sender_id, text):
+    if text.lower() in ["/start", "/help", "/about", "/restart"]:
+        handle_command(sender_id, text.lower())
+    else:
+        try:
+            # إضافة السياق من المحادثة السابقة
+            context = "\n".join([msg['content'] for msg in conversations[sender_id]["history"]][-3:])
+            prompt = f"المحادثة السابقة:\n{context}\n\nالسؤال الجديد: {text}"
+            
+            response = model.generate_content(prompt)
+            reply = response.text
+            
+            # حفظ المحادثة
+            conversations[sender_id]["history"].append({
+                "type": "text",
+                "content": text,
+                "timestamp": datetime.now()
+            })
+            
+            send_message(sender_id, reply, buttons=True)
+        except Exception as e:
+            logger.error(f"خطأ في معالجة النص: {e}")
+            send_message(sender_id, "حدث خطأ في معالجة سؤالك", buttons=True)
+
+def handle_image_message(sender_id, image_url):
+    try:
+        img = process_image(image_url)
+        if img:
+            prompt = """الرجاء تحليل هذه الصورة وتقديم:
+            1. وصف مفصل للمحتوى
+            2. أي مشاكل محتملة
+            3. حلول مقترحة
+            4. نصائح ذات صلة"""
+            
+            response = model.generate_content([prompt, img])
+            reply = "تحليل الصورة:\n" + response.text
+            
+            # حفظ المحادثة
+            conversations[sender_id]["history"].append({
+                "type": "image",
+                "content": image_url,
+                "analysis": reply,
+                "timestamp": datetime.now()
+            })
+            
+            send_message(sender_id, reply, buttons=True)
+    except Exception as e:
+        logger.error(f"خطأ في معالجة الصورة: {e}")
+        send_message(sender_id, "حدث خطأ في تحليل الصورة", buttons=True)
+
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True)
