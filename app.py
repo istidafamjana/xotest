@@ -2,31 +2,36 @@ from flask import Flask, request
 import requests
 import os
 import google.generativeai as genai
+from datetime import datetime, timedelta
 
-app = Flask(__name__)
+app = Flask(name)
 
+# تحميل المتغيرات البيئية
 PAGE_ACCESS_TOKEN = os.getenv("EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD")
 VERIFY_TOKEN = os.getenv("d51ee4e3183dbbd9a27b7d2c1af8c655")
 GEMINI_API_KEY = os.getenv("AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU")
 
+# تهيئة Gemini AI
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
+model = genai.GenerativeModel("gemini-pro")
 
-# قاموس لتخزين المحادثات مؤقتًا
+# قاموس لتخزين المحادثات مؤقتًا مع وقت الانتهاء
 conversations = {}
 
-# إرسال رسالة نصية مع أزرار اختيارية
+# تنظيف المحادثات القديمة
+def cleanup_old_conversations():
+    current_time = datetime.now()
+    expired_keys = [key for key, value in conversations.items() 
+                   if 'expiry' in value and current_time > value['expiry']]
+    for key in expired_keys:
+        del conversations[key]
+
+# إرسال رسالة إلى المستخدم
 def send_message(recipient_id, text, buttons=None):
     url = f"https://graph.facebook.com/v17.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
     payload = {
         "recipient": {"id": recipient_id},
-        "message": {
-            "text": text
-        }
-    }
-
-    if buttons:
-        payload["message"] = {
+        "message": {"text": text} if not buttons else {
             "attachment": {
                 "type": "template",
                 "payload": {
@@ -36,10 +41,10 @@ def send_message(recipient_id, text, buttons=None):
                 }
             }
         }
-
+    }
     requests.post(url, json=payload)
 
-# توليد أزرار الأوامر
+# أزرار القائمة الرئيسية
 def main_buttons():
     return [
         {"type": "postback", "title": "ابدأ /start", "payload": "/start"},
@@ -58,8 +63,11 @@ def webhook():
     for entry in data.get("entry", []):
         for message_event in entry.get("messaging", []):
             sender_id = message_event["sender"]["id"]
-
-            # الحصول على الرسالة المرسلة
+            
+            # تنظيف المحادثات القديمة
+            cleanup_old_conversations()
+            
+            # الحصول على الرسالة
             user_msg = ""
             if message_event.get("message", {}).get("text"):
                 user_msg = message_event["message"]["text"]
@@ -69,32 +77,42 @@ def webhook():
                 send_message(sender_id, "مرحبًا بك! استخدم الأزرار لبدء المحادثة.", main_buttons())
                 continue
 
-            # التفاعل مع الأوامر
+            # معالجة الأوامر الخاصة
             if user_msg == "/start":
-                send_message(sender_id, "ابدأ المحادثة الآن! أرسل لي أي رسالة.", main_buttons())
+                send_message(sender_id, "مرحبًا! يمكنك البدء في المحادثة معي الآن. أرسل لي أي سؤال وسأجيب باستخدام الذكاء الاصطناعي.", main_buttons())
             elif user_msg == "/help":
-                send_message(sender_id, "اكتب لي أي سؤال، وسأجيب باستخدام الذكاء الاصطناعي. استخدم الأزرار للتنقل.", main_buttons())
+                send_message(sender_id, "أنا بوت ذكاء اصطناعي. يمكنك:\n- إرسال أي سؤال للحصول على إجابة\n- استخدام /restart لبدء محادثة جديدة\n- استخدام الأزرار للتنقل", main_buttons())
             elif user_msg == "/restart":
-                conversations[sender_id] = []  # مسح المحادثة السابقة
-                send_message(sender_id, "تمت إعادة تعيين المحادثة. يمكنك البدء من جديد.", main_buttons())
+                if sender_id in conversations:
+                    del conversations[sender_id]
+                send_message(sender_id, "تم إعادة تعيين المحادثة. يمكنك البدء من جديد.", main_buttons())
             else:
-                # التفاعل مع الذكاء الاصطناعي باستخدام Gemini
+                # تهيئة المحادثة إذا لم تكن موجودة
                 if sender_id not in conversations:
-                    conversations[sender_id] = []
-
-                # إضافة الرسالة إلى المحادثة الحالية
-                conversations[sender_id].append({'user': user_msg})
-
-                # طلب الرد من Gemini AI
-                ai_response = model.generate_content(user_msg)
-                ai_text = ai_response.text
-
-                # إضافة الرد من Gemini إلى المحادثة
-                conversations[sender_id].append({'ai': ai_text})
-
-                # إرسال الرد للمستخدم
-                send_message(sender_id, ai_text, main_buttons())
+                    conversations[sender_id] = {
+                        'history': [],
+                        'expiry': datetime.now() + timedelta(hours=1)  # تنتهي بعد ساعة
+                    }
+                
+                # إضافة رسالة المستخدم إلى التاريخ
+                conversations[sender_id]['history'].append({'role': 'user', 'content': user_msg})
+                try:
+                    # إنشاء المحادثة مع التاريخ
+                    chat = model.start_chat(history=conversations[sender_id]['history'])
+                    response = chat.send_message(user_msg)
+                    ai_text = response.text
+                    
+                    # تحديث التاريخ وتاريخ الانتهاء
+                    conversations[sender_id]['history'].append({'role': 'model', 'content': ai_text})
+                    conversations[sender_id]['expiry'] = datetime.now() + timedelta(hours=1)
+                    
+                    # إرسال الرد
+                    send_message(sender_id, ai_text, main_buttons())
+                except Exception as e:
+                    send_message(sender_id, "حدث خطأ أثناء معالجة طلبك. يرجى المحاولة مرة أخرى.")
+                    print(f"Error: {str(e)}")
 
     return "تم", 200
-if __name__ == "__main__":
+
+if name == "main":
     app.run()
