@@ -25,7 +25,7 @@ GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
-# تخزين المحادثات المؤقتة (في الذاكرة)
+# تخزين المحادثات المؤقتة
 conversations = {}
 
 def get_user_id(sender_id):
@@ -33,7 +33,7 @@ def get_user_id(sender_id):
     return hashlib.md5(sender_id.encode()).hexdigest()
 
 def setup_messenger_profile():
-    """إعداد واجهة الماسنجر مع القائمة الدائمة"""
+    """إعداد واجهة الماسنجر مع القائمة الدائمة والمظهر"""
     url = f"https://graph.facebook.com/v17.0/me/messenger_profile?access_token={PAGE_ACCESS_TOKEN}"
     
     payload = {
@@ -44,25 +44,32 @@ def setup_messenger_profile():
                 "composer_input_disabled": False,
                 "call_to_actions": [
                     {
-                        "type": "postback",
-                        "title": "📚 التعليمات",
-                        "payload": "HELP_CMD"
-                    },
-                    {
-                        "type": "postback",
-                        "title": "🔄 إعادة البدء",
-                        "payload": "RESTART_CMD"
+                        "type": "web_url",
+                        "title": "🌐 الموقع الرسمي",
+                        "url": "https://yourwebsite.com",
+                        "webview_height_ratio": "full"
                     },
                     {
                         "type": "web_url",
                         "title": "📸 إنستجرام",
                         "url": "https://instagram.com/yourpage",
                         "webview_height_ratio": "full"
+                    },
+                    {
+                        "type": "postback",
+                        "title": "ℹ️ عن البوت",
+                        "payload": "INFO_CMD"
                     }
                 ]
             }
         ],
-        "whitelisted_domains": ["https://yourdomain.com"]
+        "whitelisted_domains": ["https://yourdomain.com"],
+        "greeting": [
+            {
+                "locale": "default",
+                "text": "مرحبًا بك في بوت الذكاء الاصطناعي! انقر على 'ابدأ' للتفاعل مع البوت"
+            }
+        ]
     }
     
     try:
@@ -101,8 +108,8 @@ def analyze_image(image_path, context=None):
         if image_path and os.path.exists(image_path):
             os.unlink(image_path)
 
-def send_message(recipient_id, message_text, buttons=None):
-    """إرسال رسالة مع أزرار"""
+def send_message(recipient_id, message_text, buttons=None, image_url=None):
+    """إرسال رسالة مع أزرار أو صورة"""
     url = f"https://graph.facebook.com/v17.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
     
     payload = {
@@ -111,7 +118,17 @@ def send_message(recipient_id, message_text, buttons=None):
         "messaging_type": "RESPONSE"
     }
 
-    if buttons:
+    if image_url:
+        payload["message"] = {
+            "attachment": {
+                "type": "image",
+                "payload": {
+                    "url": image_url,
+                    "is_reusable": True
+                }
+            }
+        }
+    elif buttons:
         payload["message"] = {
             "attachment": {
                 "type": "template",
@@ -140,16 +157,21 @@ def get_chat_context(user_id):
     return ""
 
 def handle_new_user(sender_id, user_id):
-    """معالجة المستخدم الجديد مع رسالة ترحيبية"""
+    """معالجة المستخدم الجديد مع رسالة ترحيبية متكاملة"""
+    # إرسال صورة الترحيب
+    welcome_image_url = "https://example.com/welcome-bot-image.jpg"  # استبدل برابط صورتك
+    send_message(sender_id, "", image_url=welcome_image_url)
+    
+    # إرسال رسالة الترحيب مع الأزرار
     welcome_msg = """
     🎉 أهلاً بك في بوت الذكاء الاصطناعي المتقدم!
     
     🤖 ما يمكنني فعله لك:
-    1. الإجابة على أسئلتك بذكاء
-    2. تحليل الصور ووصف محتواها
-    3. تذكر سياق المحادثة
+    • الإجابة على أسئلتك بذكاء
+    • تحليل الصور ووصف محتواها
+    • تذكر سياق المحادثة
     
-    💡 جرب أن تسألني أي شيء أو ترسل لي صورة!
+    💡 اختر أحد الخيارات أدناه للبدء:
     """
     
     send_message(sender_id, welcome_msg, buttons=[
@@ -160,8 +182,13 @@ def handle_new_user(sender_id, user_id):
         },
         {
             "type": "postback",
-            "title": "❓ كيف يعمل البوت؟",
-            "payload": "HOW_IT_WORKS"
+            "title": "📚 شرح البوت",
+            "payload": "INFO_CMD"
+        },
+        {
+            "type": "web_url",
+            "title": "📞 تواصل معنا",
+            "url": "https://instagram.com/yourpage"  # أو رابط الاتصال الخاص بك
         }
     ])
     
@@ -174,36 +201,49 @@ def handle_new_user(sender_id, user_id):
 def handle_command(sender_id, user_id, command):
     """معالجة الأوامر"""
     if command == "GET_STARTED":
-        handle_new_user(sender_id, user_id)
+        start_msg = "مرحبًا! يمكنك البدء بإرسال أي سؤال أو صورة وسأساعدك."
+        send_message(sender_id, start_msg, buttons=[
+            {
+                "type": "web_url",
+                "title": "🌐 زيارة الموقع",
+                "url": "https://yourwebsite.com"
+            },
+            {
+                "type": "web_url",
+                "title": "📸 متابعة الإنستجرام",
+                "url": "https://instagram.com/yourpage"
+            }
+        ])
         
-    elif command == "HELP_CMD":
-        help_msg = """
-        📖 مركز المساعدة:
-        
-        • أرسل أي سؤال للحصول على إجابة
-        • أرسل صورة لتحليل محتواها
-        • الأوامر المتاحة:
-          - "مساعدة": عرض هذه التعليمات
-          - "إعادة": بدء محادثة جديدة
-        """
-        send_message(sender_id, help_msg)
-        
-    elif command == "HOW_IT_WORKS":
+    elif command == "INFO_CMD":
         info_msg = """
-        ⚙️ كيف يعمل البوت:
+        ℹ️ معلومات عن البوت:
         
-        1. يحفظ آخر 5 رسائل كسياق للمحادثة
-        2. يحلل الصور باستخدام ذكاء Gemini
-        3. يجيب على الأسئلة بذكاء اصطناعي متقدم
-        4. يدعم المحادثات الطويلة والمتتابعة
+        الإصدار: 4.0
+        التقنية: Gemini AI من جوجل
+        الميزات:
+        - فهم الأسئلة المعقدة
+        - تحليل الصور المتقدم
+        - دعم المحادثات الطويلة
+        
+        📅 آخر تحديث: 2024
         """
         send_message(sender_id, info_msg)
         
-    elif command == "RESTART_CMD":
-        if user_id in conversations:
-            del conversations[user_id]
-        send_message(sender_id, "🔄 تم إعادة ضبط المحادثة بنجاح!")
-        handle_new_user(sender_id, user_id)
+    elif command == "CONNECT_CMD":
+        connect_msg = "يمكنك متابعتنا على:"
+        send_message(sender_id, connect_msg, buttons=[
+            {
+                "type": "web_url",
+                "title": "📸 إنستجرام",
+                "url": "https://instagram.com/yourpage"
+            },
+            {
+                "type": "web_url",
+                "title": "🌐 الموقع الرسمي",
+                "url": "https://yourwebsite.com"
+            }
+        ])
 
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
@@ -222,11 +262,11 @@ def webhook():
             for event in entry.get('messaging', []):
                 sender_id = event['sender']['id']
                 user_id = get_user_id(sender_id)
+                current_time = time.time()
                 
                 # تنظيف المحادثات القديمة (أكثر من ساعة)
-                current_time = time.time()
                 for uid in list(conversations.keys()):
-                    if current_time - conversations[uid]["last_active"] > 3600:  # 1 ساعة
+                    if current_time - conversations[uid]["last_active"] > 3600:
                         del conversations[uid]
                 
                 # معالجة Postback (أزرار القائمة)
@@ -259,7 +299,6 @@ def webhook():
                                     analysis = analyze_image(image_path, context)
                                     
                                     if analysis:
-                                        # تحديث المحادثة
                                         conversations[user_id]["history"].append(f"صورة: {analysis[:200]}...")
                                         send_message(sender_id, f"📸 تحليل الصورة:\n\n{analysis}")
                                     else:
@@ -275,8 +314,18 @@ def webhook():
                             handle_command(sender_id, user_id, "HELP_CMD")
                         elif user_message.lower() in ['إعادة', 'restart']:
                             handle_command(sender_id, user_id, "RESTART_CMD")
-                        elif user_message.lower() in ['كيف يعمل', 'how it works']:
-                            handle_command(sender_id, user_id, "HOW_IT_WORKS")
+                        elif user_message.lower() in ['تواصل', 'connect']:
+                            handle_command(sender_id, user_id, "CONNECT_CMD")
+                        elif user_message.lower() in ['موقع', 'web']:
+                            send_message(sender_id, "🌐 يمكنك زيارة موقعنا:", buttons=[
+                                {
+                                    "type": "web_url",
+                                    "title": "الموقع الرسمي",
+                                    "url": "https://yourwebsite.com"
+                                }
+                            ])
+                        elif user_message.lower() in ['شرح', 'info']:
+                            handle_command(sender_id, user_id, "INFO_CMD")
                         else:
                             # معالجة الأسئلة مع السياق
                             try:
@@ -285,7 +334,6 @@ def webhook():
                                 
                                 response = model.generate_content(prompt)
                                 
-                                # تحديث المحادثة
                                 conversations[user_id]["history"].append(f"المستخدم: {user_message}")
                                 conversations[user_id]["history"].append(f"البوت: {response.text}")
                                 
@@ -302,7 +350,7 @@ def webhook():
 
 @app.route('/')
 def home():
-    return "Facebook AI Bot with Enhanced Features"
+    return "Facebook AI Bot with Complete Features"
 
 if __name__ == '__main__':
     setup_messenger_profile()
