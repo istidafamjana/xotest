@@ -8,6 +8,7 @@ import urllib.request
 import os
 import json
 import hashlib
+import time
 
 app = Flask(__name__)
 
@@ -24,37 +25,19 @@ GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
-# تخزين المحادثات
-CONVERSATIONS_FILE = "conversations.json"
-
-def load_conversations():
-    try:
-        if os.path.exists(CONVERSATIONS_FILE):
-            with open(CONVERSATIONS_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-    except Exception as e:
-        logger.error(f"Error loading conversations: {str(e)}")
-    return {}
-
-def save_conversations(data):
-    try:
-        with open(CONVERSATIONS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"Error saving conversations: {str(e)}")
+# تخزين المحادثات المؤقتة (في الذاكرة)
+conversations = {}
 
 def get_user_id(sender_id):
     """إنشاء معرف فريد للمستخدم"""
     return hashlib.md5(sender_id.encode()).hexdigest()
 
 def setup_messenger_profile():
-    """إعداد المظهر العام للبوت في فيسبوك"""
+    """إعداد واجهة الماسنجر مع القائمة الدائمة"""
     url = f"https://graph.facebook.com/v17.0/me/messenger_profile?access_token={PAGE_ACCESS_TOKEN}"
     
     payload = {
-        "get_started": {
-            "payload": "GET_STARTED"
-        },
+        "get_started": {"payload": "GET_STARTED"},
         "persistent_menu": [
             {
                 "locale": "default",
@@ -79,17 +62,15 @@ def setup_messenger_profile():
                 ]
             }
         ],
-        "whitelisted_domains": [
-            "https://yourdomain.com"  # استبدل برابطك
-        ]
+        "whitelisted_domains": ["https://yourdomain.com"]
     }
     
     try:
         response = requests.post(url, json=payload)
         response.raise_for_status()
-        logger.info("تم إعداد واجهة فيسبوك بنجاح")
+        logger.info("تم إعداد واجهة الماسنجر بنجاح")
     except Exception as e:
-        logger.error(f"Error setting up messenger profile: {str(e)}")
+        logger.error(f"خطأ في إعداد الواجهة: {str(e)}")
 
 def download_image(url):
     """تحميل الصورة من الرابط المؤقت"""
@@ -101,20 +82,20 @@ def download_image(url):
                 tmp_file.write(response.read())
             return tmp_file.name
     except Exception as e:
-        logger.error(f"Error downloading image: {str(e)}")
+        logger.error(f"خطأ في تحميل الصورة: {str(e)}")
         return None
 
 def analyze_image(image_path, context=None):
-    """تحليل الصورة باستخدام Gemini"""
+    """تحليل الصورة مع السياق"""
     try:
         img = genai.upload_file(image_path)
         prompt = "حلل هذه الصورة بدقة:"
         if context:
-            prompt = f"{context}\n{prompt}"
+            prompt = f"سياق المحادثة:\n{context}\n{prompt}"
         response = model.generate_content([prompt, img])
         return response.text
     except Exception as e:
-        logger.error(f"Error analyzing image: {str(e)}")
+        logger.error(f"خطأ في تحليل الصورة: {str(e)}")
         return None
     finally:
         if image_path and os.path.exists(image_path):
@@ -149,55 +130,80 @@ def send_message(recipient_id, message_text, buttons=None):
         response.raise_for_status()
         return True
     except Exception as e:
-        logger.error(f"Error sending message: {str(e)}")
+        logger.error(f"خطأ في إرسال الرسالة: {str(e)}")
         return False
 
 def get_chat_context(user_id):
-    """الحصول على سياق المحادثة"""
-    conversations = load_conversations()
+    """الحصول على سياق المحادثة (آخر 5 رسائل)"""
     if user_id in conversations:
-        return "\n".join(conversations[user_id]["history"][-5:])  # آخر 5 رسائل
+        return "\n".join(conversations[user_id]["history"][-5:])
     return ""
+
+def handle_new_user(sender_id, user_id):
+    """معالجة المستخدم الجديد مع رسالة ترحيبية"""
+    welcome_msg = """
+    🎉 أهلاً بك في بوت الذكاء الاصطناعي المتقدم!
+    
+    🤖 ما يمكنني فعله لك:
+    1. الإجابة على أسئلتك بذكاء
+    2. تحليل الصور ووصف محتواها
+    3. تذكر سياق المحادثة
+    
+    💡 جرب أن تسألني أي شيء أو ترسل لي صورة!
+    """
+    
+    send_message(sender_id, welcome_msg, buttons=[
+        {
+            "type": "postback",
+            "title": "🚀 ابدأ المحادثة",
+            "payload": "GET_STARTED"
+        },
+        {
+            "type": "postback",
+            "title": "❓ كيف يعمل البوت؟",
+            "payload": "HOW_IT_WORKS"
+        }
+    ])
+    
+    # بدء محادثة جديدة
+    conversations[user_id] = {
+        "history": ["بدأ المستخدم محادثة جديدة"],
+        "last_active": time.time()
+    }
 
 def handle_command(sender_id, user_id, command):
     """معالجة الأوامر"""
-    conversations = load_conversations()
-    
     if command == "GET_STARTED":
-        welcome_msg = "مرحبًا بك! أنا بوت الذكاء الاصطناعي. كيف يمكنني مساعدتك اليوم؟"
-        send_message(sender_id, welcome_msg, buttons=[
-            {
-                "type": "postback",
-                "title": "🆘 المساعدة",
-                "payload": "HELP_CMD"
-            },
-            {
-                "type": "postback",
-                "title": "ℹ️ معلومات",
-                "payload": "INFO_CMD"
-            }
-        ])
-        
-        # بدء محادثة جديدة
-        conversations[user_id] = {
-            "history": ["بدأ المستخدم المحادثة"],
-            "last_active": datetime.now().isoformat()
-        }
-        save_conversations(conversations)
+        handle_new_user(sender_id, user_id)
         
     elif command == "HELP_CMD":
-        help_msg = "📚 الأوامر المتاحة:\n\n• إرسال أي سؤال للحصول على إجابة\n• إرسال صورة لتحليلها\n• 'إعادة' لبدء محادثة جديدة"
+        help_msg = """
+        📖 مركز المساعدة:
+        
+        • أرسل أي سؤال للحصول على إجابة
+        • أرسل صورة لتحليل محتواها
+        • الأوامر المتاحة:
+          - "مساعدة": عرض هذه التعليمات
+          - "إعادة": بدء محادثة جديدة
+        """
         send_message(sender_id, help_msg)
         
-    elif command == "INFO_CMD":
-        info_msg = "🤖 معلومات البوت:\n\nالإصدار: 3.5\nالتقنية: Gemini AI\nالمطور: فريقك"
+    elif command == "HOW_IT_WORKS":
+        info_msg = """
+        ⚙️ كيف يعمل البوت:
+        
+        1. يحفظ آخر 5 رسائل كسياق للمحادثة
+        2. يحلل الصور باستخدام ذكاء Gemini
+        3. يجيب على الأسئلة بذكاء اصطناعي متقدم
+        4. يدعم المحادثات الطويلة والمتتابعة
+        """
         send_message(sender_id, info_msg)
         
     elif command == "RESTART_CMD":
         if user_id in conversations:
             del conversations[user_id]
-            save_conversations(conversations)
-        send_message(sender_id, "تم إعادة ضبط المحادثة بنجاح!")
+        send_message(sender_id, "🔄 تم إعادة ضبط المحادثة بنجاح!")
+        handle_new_user(sender_id, user_id)
 
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
@@ -205,7 +211,7 @@ def webhook():
     if request.method == 'GET':
         verify_token = request.args.get('hub.verify_token')
         if verify_token == VERIFY_TOKEN:
-            setup_messenger_profile()  # إعداد الواجهة عند التحقق
+            setup_messenger_profile()
             return request.args.get('hub.challenge')
         return "Verification failed", 403
     
@@ -216,16 +222,14 @@ def webhook():
             for event in entry.get('messaging', []):
                 sender_id = event['sender']['id']
                 user_id = get_user_id(sender_id)
-                conversations = load_conversations()
                 
-                # تنظيف المحادثات القديمة (أكثر من 24 ساعة)
+                # تنظيف المحادثات القديمة (أكثر من ساعة)
+                current_time = time.time()
                 for uid in list(conversations.keys()):
-                    last_active = datetime.fromisoformat(conversations[uid]["last_active"])
-                    if (datetime.now() - last_active) > timedelta(hours=24):
+                    if current_time - conversations[uid]["last_active"] > 3600:  # 1 ساعة
                         del conversations[uid]
-                save_conversations(conversations)
                 
-                # معالجة Postback
+                # معالجة Postback (أزرار القائمة)
                 if 'postback' in event:
                     handle_command(sender_id, user_id, event['postback']['payload'])
                     continue
@@ -234,11 +238,19 @@ def webhook():
                 if 'message' in event:
                     message = event['message']
                     
+                    # التحقق من مستخدم جديد
+                    if user_id not in conversations:
+                        handle_new_user(sender_id, user_id)
+                        continue
+                    
+                    # تحديث وقت النشاط
+                    conversations[user_id]["last_active"] = current_time
+                    
                     # معالجة الصور
                     if 'attachments' in message:
                         for attachment in message['attachments']:
                             if attachment['type'] == 'image':
-                                send_message(sender_id, "جاري تحليل الصورة...")
+                                send_message(sender_id, "🔍 جاري تحليل الصورة...")
                                 image_url = attachment['payload']['url']
                                 image_path = download_image(image_url)
                                 
@@ -248,19 +260,10 @@ def webhook():
                                     
                                     if analysis:
                                         # تحديث المحادثة
-                                        if user_id not in conversations:
-                                            conversations[user_id] = {
-                                                "history": [],
-                                                "last_active": datetime.now().isoformat()
-                                            }
-                                        
-                                        conversations[user_id]["history"].append(f"صورة: {analysis[:100]}...")
-                                        conversations[user_id]["last_active"] = datetime.now().isoformat()
-                                        save_conversations(conversations)
-                                        
-                                        send_message(sender_id, f"📸 نتيجة التحليل:\n\n{analysis}")
+                                        conversations[user_id]["history"].append(f"صورة: {analysis[:200]}...")
+                                        send_message(sender_id, f"📸 تحليل الصورة:\n\n{analysis}")
                                     else:
-                                        send_message(sender_id, "⚠️ لم أستطع تحليل الصورة")
+                                        send_message(sender_id, "⚠️ لم أتمكن من تحليل الصورة")
                         continue
                     
                     # معالجة النصوص
@@ -270,44 +273,36 @@ def webhook():
                         # الأوامر النصية
                         if user_message.lower() in ['مساعدة', 'help']:
                             handle_command(sender_id, user_id, "HELP_CMD")
-                        elif user_message.lower() in ['إعادة', 'اعادة', 'restart']:
+                        elif user_message.lower() in ['إعادة', 'restart']:
                             handle_command(sender_id, user_id, "RESTART_CMD")
-                        elif user_message.lower() in ['معلومات', 'info']:
-                            handle_command(sender_id, user_id, "INFO_CMD")
+                        elif user_message.lower() in ['كيف يعمل', 'how it works']:
+                            handle_command(sender_id, user_id, "HOW_IT_WORKS")
                         else:
                             # معالجة الأسئلة مع السياق
                             try:
                                 context = get_chat_context(user_id)
-                                prompt = f"{context}\n\nالسؤال الجديد: {user_message}" if context else user_message
+                                prompt = f"سياق المحادثة:\n{context}\n\nالسؤال الجديد: {user_message}" if context else user_message
                                 
                                 response = model.generate_content(prompt)
                                 
                                 # تحديث المحادثة
-                                if user_id not in conversations:
-                                    conversations[user_id] = {
-                                        "history": [],
-                                        "last_active": datetime.now().isoformat()
-                                    }
-                                
                                 conversations[user_id]["history"].append(f"المستخدم: {user_message}")
                                 conversations[user_id]["history"].append(f"البوت: {response.text}")
-                                conversations[user_id]["last_active"] = datetime.now().isoformat()
-                                save_conversations(conversations)
                                 
                                 send_message(sender_id, response.text)
                                 
                             except Exception as e:
-                                logger.error(f"AI Error: {str(e)}")
+                                logger.error(f"خطأ في الذكاء الاصطناعي: {str(e)}")
                                 send_message(sender_id, "⚠️ حدث خطأ أثناء معالجة سؤالك")
     
     except Exception as e:
-        logger.error(f"Webhook Error: {str(e)}")
+        logger.error(f"خطأ في الويب هوك: {str(e)}")
     
     return jsonify({"status": "success"}), 200
 
 @app.route('/')
 def home():
-    return "Facebook AI Bot with Persistent Menu and Memory"
+    return "Facebook AI Bot with Enhanced Features"
 
 if __name__ == '__main__':
     setup_messenger_profile()
