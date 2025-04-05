@@ -37,7 +37,7 @@ def get_welcome_screen():
                 "template_type": "generic",
                 "elements": [{
                     "title": "مرحبًا بك في بوت الذكاء الاصطناعي! 🤖",
-                    "image_url": "https://example.com/ai-bot.jpg",
+                    "image_url": "https://l.top4top.io/p_3056965410.png",
                     "subtitle": "يمكنك طرح أي سؤال وسأساعدك بالإجابة باستخدام Gemini 1.5 Flash",
                     "buttons": [
                         {
