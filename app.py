@@ -34,6 +34,11 @@ def get_user_id(sender_id):
 
 def setup_messenger_profile():
     """إعداد واجهة الماسنجر مع القائمة الدائمة والمظهر"""
+    # حذف الإعدادات القديمة أولاً
+    delete_url = f"https://graph.facebook.com/v17.0/me/messenger_profile?access_token={PAGE_ACCESS_TOKEN}"
+    requests.delete(delete_url, json={"fields":["persistent_menu","get_started","whitelisted_domains","greeting"]})
+    
+    # إعداد الإعدادات الجديدة
     url = f"https://graph.facebook.com/v17.0/me/messenger_profile?access_token={PAGE_ACCESS_TOKEN}"
     
     payload = {
@@ -46,14 +51,19 @@ def setup_messenger_profile():
                     {
                         "type": "web_url",
                         "title": "🌐 الموقع الرسمي",
-                        "url": "https://oth-ia.vercel.app",
-                        "webview_height_ratio": "full"
+                        "url": "https://oth-ia.vercel.app/",
+                        "webview_height_ratio": "full",
+                        "messenger_extensions": True,
+                        "webview_share_button": "hide",
+                        "fallback_url": "https://oth-ia.vercel.app/"
                     },
                     {
                         "type": "web_url",
                         "title": "📸 إنستجرام",
-                        "url": "https://instagram.com/yourpage",
-                        "webview_height_ratio": "full"
+                        "url": "https://instagram.com/mx.fo",
+                        "webview_height_ratio": "full",
+                        "messenger_extensions": True,
+                        "fallback_url": "https://instagram.com/mx.fo"
                     },
                     {
                         "type": "postback",
@@ -63,7 +73,11 @@ def setup_messenger_profile():
                 ]
             }
         ],
-        "whitelisted_domains": ["https://oth-ia.vercel.app"],
+        "whitelisted_domains": [
+            "https://oth-ia.vercel.app",
+            "https://www.oth-ia.vercel.app",
+            "https://instagram.com"
+        ],
         "greeting": [
             {
                 "locale": "default",
@@ -159,7 +173,7 @@ def get_chat_context(user_id):
 def handle_new_user(sender_id, user_id):
     """معالجة المستخدم الجديد مع رسالة ترحيبية متكاملة"""
     # إرسال صورة الترحيب
-    welcome_image_url = "https://j.top4top.io/p_3382ckcex0.jpg"  # استبدل برابط صورتك
+    welcome_image_url = "https://j.top4top.io/p_3382ckcex0.jpg"
     send_message(sender_id, "", image_url=welcome_image_url)
     
     # إرسال رسالة الترحيب مع الأزرار
@@ -172,7 +186,6 @@ def handle_new_user(sender_id, user_id):
     • تذكر سياق المحادثة
     
     💡 اختر أحد الخيارات أدناه للبدء:
-  ✔️ إستعمل  messanger لتضهر الازرار 
     """
     
     send_message(sender_id, welcome_msg, buttons=[
@@ -182,14 +195,19 @@ def handle_new_user(sender_id, user_id):
             "payload": "GET_STARTED"
         },
         {
-            "type": "postback",
-            "title": "📚 شرح البوت",
-            "payload": "INFO_CMD"
+            "type": "web_url",
+            "title": "🌐 الموقع الرسمي",
+            "url": "https://oth-ia.vercel.app/",
+            "webview_height_ratio": "full",
+            "messenger_extensions": True,
+            "fallback_url": "https://oth-ia.vercel.app/"
         },
         {
             "type": "web_url",
             "title": "📞 تواصل معنا",
-            "url": "https://instagram.com/mx.fo"  # أو رابط الاتصال الخاص بك
+            "url": "https://instagram.com/mx.fo",
+            "webview_height_ratio": "full",
+            "messenger_extensions": True
         }
     ])
     
@@ -207,12 +225,17 @@ def handle_command(sender_id, user_id, command):
             {
                 "type": "web_url",
                 "title": "🌐 زيارة الموقع",
-                "url": "https://oth-ia.vercel.app"
+                "url": "https://oth-ia.vercel.app/",
+                "webview_height_ratio": "full",
+                "messenger_extensions": True,
+                "fallback_url": "https://oth-ia.vercel.app/"
             },
             {
                 "type": "web_url",
                 "title": "📸 متابعة الإنستجرام",
-                "url": "https://instagram.com/mx.fo"
+                "url": "https://instagram.com/mx.fo",
+                "webview_height_ratio": "full",
+                "messenger_extensions": True
             }
         ])
         
@@ -237,12 +260,16 @@ def handle_command(sender_id, user_id, command):
             {
                 "type": "web_url",
                 "title": "📸 إنستجرام",
-                "url": "https://instagram.com/mx.fo"
+                "url": "https://instagram.com/mx.fo",
+                "webview_height_ratio": "full",
+                "messenger_extensions": True
             },
             {
                 "type": "web_url",
                 "title": "🌐 الموقع الرسمي",
-                "url": "https://oth-ia.vercel.app"
+                "url": "https://oth-ia.vercel.app/",
+                "webview_height_ratio": "full",
+                "messenger_extensions": True
             }
         ])
 
@@ -322,7 +349,9 @@ def webhook():
                                 {
                                     "type": "web_url",
                                     "title": "الموقع الرسمي",
-                                    "url": "https://oth-ia.vercel.app"
+                                    "url": "https://oth-ia.vercel.app/",
+                                    "webview_height_ratio": "full",
+                                    "messenger_extensions": True
                                 }
                             ])
                         elif user_message.lower() in ['شرح', 'info']:
