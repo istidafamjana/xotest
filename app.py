@@ -1,12 +1,10 @@
 from flask import Flask, request, jsonify
 import requests
 import google.generativeai as genai
-from datetime import datetime, timedelta
 import logging
 import tempfile
 import urllib.request
 import os
-import json
 import hashlib
 import time
 
@@ -34,11 +32,6 @@ def get_user_id(sender_id):
 
 def setup_messenger_profile():
     """إعداد واجهة الماسنجر مع القائمة الدائمة والمظهر"""
-    # حذف الإعدادات القديمة أولاً
-    delete_url = f"https://graph.facebook.com/v17.0/me/messenger_profile?access_token={PAGE_ACCESS_TOKEN}"
-    requests.delete(delete_url, json={"fields":["persistent_menu","get_started","whitelisted_domains","greeting"]})
-    
-    # إعداد الإعدادات الجديدة
     url = f"https://graph.facebook.com/v17.0/me/messenger_profile?access_token={PAGE_ACCESS_TOKEN}"
     
     payload = {
@@ -51,19 +44,14 @@ def setup_messenger_profile():
                     {
                         "type": "web_url",
                         "title": "🌐 الموقع الرسمي",
-                        "url": "https://oth-ia.vercel.app/",
-                        "webview_height_ratio": "full",
-                        "messenger_extensions": True,
-                        "webview_share_button": "hide",
-                        "fallback_url": "https://oth-ia.vercel.app/"
+                        "url": "https://oth-ia.vercel.app",
+                        "webview_height_ratio": "full"
                     },
                     {
                         "type": "web_url",
                         "title": "📸 إنستجرام",
-                        "url": "https://instagram.com/mx.fo",
-                        "webview_height_ratio": "full",
-                        "messenger_extensions": True,
-                        "fallback_url": "https://instagram.com/mx.fo"
+                        "url": "https://instagram.com/yourpage",
+                        "webview_height_ratio": "full"
                     },
                     {
                         "type": "postback",
@@ -73,11 +61,7 @@ def setup_messenger_profile():
                 ]
             }
         ],
-        "whitelisted_domains": [
-            "https://oth-ia.vercel.app",
-            "https://www.oth-ia.vercel.app",
-            "https://instagram.com"
-        ],
+        "whitelisted_domains": ["https://oth-ia.vercel.app"],
         "greeting": [
             {
                 "locale": "default",
@@ -171,12 +155,7 @@ def get_chat_context(user_id):
     return ""
 
 def handle_new_user(sender_id, user_id):
-    """معالجة المستخدم الجديد مع رسالة ترحيبية متكاملة"""
-    # إرسال صورة الترحيب
-    welcome_image_url = "https://j.top4top.io/p_3382ckcex0.jpg"
-    send_message(sender_id, "", image_url=welcome_image_url)
-    
-    # إرسال رسالة الترحيب مع الأزرار
+    """معالجة المستخدم الجديد"""
     welcome_msg = """
     🎉 أهلاً بك في بوت الذكاء الاصطناعي المتقدم!
     
@@ -195,19 +174,9 @@ def handle_new_user(sender_id, user_id):
             "payload": "GET_STARTED"
         },
         {
-            "type": "web_url",
-            "title": "🌐 الموقع الرسمي",
-            "url": "https://oth-ia.vercel.app/",
-            "webview_height_ratio": "full",
-            "messenger_extensions": True,
-            "fallback_url": "https://oth-ia.vercel.app/"
-        },
-        {
-            "type": "web_url",
-            "title": "📞 تواصل معنا",
-            "url": "https://instagram.com/mx.fo",
-            "webview_height_ratio": "full",
-            "messenger_extensions": True
+            "type": "postback",
+            "title": "📚 شرح البوت",
+            "payload": "INFO_CMD"
         }
     ])
     
@@ -221,23 +190,7 @@ def handle_command(sender_id, user_id, command):
     """معالجة الأوامر"""
     if command == "GET_STARTED":
         start_msg = "مرحبًا! يمكنك البدء بإرسال أي سؤال أو صورة وسأساعدك."
-        send_message(sender_id, start_msg, buttons=[
-            {
-                "type": "web_url",
-                "title": "🌐 زيارة الموقع",
-                "url": "https://oth-ia.vercel.app/",
-                "webview_height_ratio": "full",
-                "messenger_extensions": True,
-                "fallback_url": "https://oth-ia.vercel.app/"
-            },
-            {
-                "type": "web_url",
-                "title": "📸 متابعة الإنستجرام",
-                "url": "https://instagram.com/mx.fo",
-                "webview_height_ratio": "full",
-                "messenger_extensions": True
-            }
-        ])
+        send_message(sender_id, start_msg)
         
     elif command == "INFO_CMD":
         info_msg = """
@@ -253,25 +206,6 @@ def handle_command(sender_id, user_id, command):
         📅 آخر تحديث: 2024
         """
         send_message(sender_id, info_msg)
-        
-    elif command == "CONNECT_CMD":
-        connect_msg = "يمكنك متابعتنا على:"
-        send_message(sender_id, connect_msg, buttons=[
-            {
-                "type": "web_url",
-                "title": "📸 إنستجرام",
-                "url": "https://instagram.com/mx.fo",
-                "webview_height_ratio": "full",
-                "messenger_extensions": True
-            },
-            {
-                "type": "web_url",
-                "title": "🌐 الموقع الرسمي",
-                "url": "https://oth-ia.vercel.app/",
-                "webview_height_ratio": "full",
-                "messenger_extensions": True
-            }
-        ])
 
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
@@ -292,12 +226,12 @@ def webhook():
                 user_id = get_user_id(sender_id)
                 current_time = time.time()
                 
-                # تنظيف المحادثات القديمة (أكثر من ساعة)
+                # تنظيف المحادثات القديمة
                 for uid in list(conversations.keys()):
                     if current_time - conversations[uid]["last_active"] > 3600:
                         del conversations[uid]
                 
-                # معالجة Postback (أزرار القائمة)
+                # معالجة Postback
                 if 'postback' in event:
                     handle_command(sender_id, user_id, event['postback']['payload'])
                     continue
@@ -337,27 +271,9 @@ def webhook():
                     if 'text' in message:
                         user_message = message['text'].strip()
                         
-                        # الأوامر النصية
                         if user_message.lower() in ['مساعدة', 'help']:
-                            handle_command(sender_id, user_id, "HELP_CMD")
-                        elif user_message.lower() in ['إعادة', 'restart']:
-                            handle_command(sender_id, user_id, "RESTART_CMD")
-                        elif user_message.lower() in ['تواصل', 'connect']:
-                            handle_command(sender_id, user_id, "CONNECT_CMD")
-                        elif user_message.lower() in ['موقع', 'web']:
-                            send_message(sender_id, "🌐 يمكنك زيارة موقعنا:", buttons=[
-                                {
-                                    "type": "web_url",
-                                    "title": "الموقع الرسمي",
-                                    "url": "https://oth-ia.vercel.app/",
-                                    "webview_height_ratio": "full",
-                                    "messenger_extensions": True
-                                }
-                            ])
-                        elif user_message.lower() in ['شرح', 'info']:
                             handle_command(sender_id, user_id, "INFO_CMD")
                         else:
-                            # معالجة الأسئلة مع السياق
                             try:
                                 context = get_chat_context(user_id)
                                 prompt = f"سياق المحادثة:\n{context}\n\nالسؤال الجديد: {user_message}" if context else user_message
