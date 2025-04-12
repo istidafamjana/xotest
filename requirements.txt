@@ -3,3 +3,8 @@ requests
 google-generativeai
 pillow
 python-dotenv
+Flask-SQLAlchemy
+google-generativeai
+werkzeug
+Flask
+
