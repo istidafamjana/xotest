@@ -28,7 +28,7 @@ model = genai.GenerativeModel('gemini-1.5-flash')
 conversations = {}
 CONVERSATION_TIMEOUT = 5 * 60 * 60  # 5 ساعات بالثواني
 user_locks = {}  # أقفال لكل مستخدم
-global_lock = Lock()  # قفل عام للوصول إلى conversations
+global_lock = Lock()  # قفل عام
 
 def get_user_id(sender_id):
     """إنشاء معرف فريد للمستخدم"""
@@ -56,15 +56,13 @@ def setup_messenger_profile():
                         "type": "web_url",
                         "title": "🌐 الموقع الرسمي",
                         "url": "https://oth-ia.vercel.app",
-                        "webview_height_ratio": "full",
-                        "messenger_extensions": True
+                        "webview_height_ratio": "full"
                     },
                     {
                         "type": "web_url",
                         "title": "📸 إنستجرام",
                         "url": "https://instagram.com/mx.fo",
-                        "webview_height_ratio": "full",
-                        "messenger_extensions": True
+                        "webview_height_ratio": "full"
                     },
                     {
                         "type": "postback",
@@ -107,7 +105,7 @@ def analyze_image(image_path, context=None):
     """تحليل الصورة مع السياق"""
     try:
         img = genai.upload_file(image_path)
-        prompt = "حلل هذه الصورة بدقة وأعط وصفاً تفصيلياً:"
+        prompt = "حلل هذه الصورة بدقة وأعط وصفاً تفصيلياً:\n"
         if context:
             prompt = f"سياق المحادثة:\n{context}\n{prompt}"
         response = model.generate_content([prompt, img])
@@ -178,9 +176,7 @@ def handle_new_user(sender_id, user_id):
     • تحليل الصور ووصف محتواها بدقة
     • تذكر سياق المحادثة لمدة 5 ساعات
     
-    💡 يمكنك إرسال:
-    - أي سؤال نصي
-    - أو صورة لتحليلها
+    💡 يمكنك إرسال أي صورة وسأحللها لك بدقة
     """
     
     with global_lock:
@@ -197,79 +193,70 @@ def handle_command(sender_id, user_id, command):
     
     with user_lock:
         if command == "GET_STARTED":
-            start_msg = "مرحبًا! يمكنك البدء بإرسال أي سؤال أو صورة وسأساعدك في تحليلها."
+            start_msg = "مرحباً بك! يمكنك إرسال:\n- أسئلة نصية\n- صور لتحليلها\nوسأرد عليك بأفضل إجابة"
             send_message(sender_id, start_msg)
             
         elif command == "INFO_CMD":
             info_msg = """
             ℹ️ معلومات عن البوت:
             
-            الإصدار: 5.0
+            الإصدار: 5.1
             التقنية: Gemini AI من جوجل
-            الميزات:
-            - فهم الأسئلة المعقدة
-            - تحليل الصور المتقدم مع وصف تفصيلي
-            - دعم جلسات فردية لكل مستخدم
+            ميزات تحليل الصور:
+            - وصف دقيق لمحتوى الصورة
+            - تحليل النصوص في الصور (إن وجدت)
+            - فهم السياق العام
             
-            📅 آخر تحديث: 2024
+            📸 جرب إرسال صورة لتحصل على وصف مفصل
             """
             send_message(sender_id, info_msg)
 
-def process_user_message(sender_id, user_id, message):
-    """معالجة رسالة المستخدم بشكل تسلسلي"""
+def process_image_message(sender_id, user_id, image_url):
+    """معالجة رسائل الصور بشكل منفصل"""
     user_lock = get_user_lock(user_id)
     
     with user_lock:
-        # تحديث وقت النشاط
-        with global_lock:
-            if user_id not in conversations:
-                handle_new_user(sender_id, user_id)
-                return
-                
-            conversations[user_id]["last_active"] = time.time()
+        send_message(sender_id, "🔍 جاري تحليل الصورة...")
+        image_path = download_image(image_url)
         
-        # معالجة الصور
-        if 'attachments' in message:
-            for attachment in message['attachments']:
-                if attachment['type'] == 'image':
-                    send_message(sender_id, "🔍 جاري تحليل الصورة بدقة...")
-                    image_url = attachment['payload']['url']
-                    image_path = download_image(image_url)
-                    
-                    if image_path:
-                        context = get_chat_context(user_id)
-                        analysis = analyze_image(image_path, context)
-                        
-                        if analysis:
-                            with global_lock:
-                                conversations[user_id]["history"].append(f"صورة: {analysis[:200]}...")
-                            send_message(sender_id, f"📸 وصف الصورة:\n\n{analysis}")
-                        else:
-                            send_message(sender_id, "⚠️ لم أتمكن من تحليل الصورة، يرجى المحاولة بصورة أخرى")
-            return
-        
-        # معالجة النصوص
-        if 'text' in message:
-            user_message = message['text'].strip()
+        if image_path:
+            context = get_chat_context(user_id)
+            analysis = analyze_image(image_path, context)
             
-            if user_message.lower() in ['مساعدة', 'help']:
-                handle_command(sender_id, user_id, "INFO_CMD")
+            if analysis:
+                with global_lock:
+                    conversations[user_id]["history"].append(f"صورة: {analysis[:200]}...")
+                    conversations[user_id]["last_active"] = time.time()
+                
+                response_msg = f"📸 تحليل الصورة:\n\n{analysis}\n\n✏️ يمكنك طرح أسئلة إضافية عن الصورة"
+                send_message(sender_id, response_msg)
             else:
-                try:
-                    context = get_chat_context(user_id)
-                    prompt = f"سياق المحادثة:\n{context}\n\nالسؤال الجديد: {user_message}" if context else user_message
-                    
-                    response = model.generate_content(prompt)
-                    
-                    with global_lock:
-                        conversations[user_id]["history"].append(f"المستخدم: {user_message}")
-                        conversations[user_id]["history"].append(f"البوت: {response.text}")
-                    
-                    send_message(sender_id, response.text)
-                    
-                except Exception as e:
-                    logger.error(f"خطأ في الذكاء الاصطناعي: {str(e)}")
-                    send_message(sender_id, "⚠️ حدث خطأ أثناء معالجة سؤالك، يرجى المحاولة لاحقاً")
+                send_message(sender_id, "⚠️ لم أتمكن من تحليل الصورة، يرجى المحاولة بصورة أخرى")
+
+def process_text_message(sender_id, user_id, text):
+    """معالجة الرسائل النصية"""
+    user_lock = get_user_lock(user_id)
+    
+    with user_lock:
+        if text.lower() in ['مساعدة', 'help']:
+            handle_command(sender_id, user_id, "INFO_CMD")
+        else:
+            try:
+                context = get_chat_context(user_id)
+                prompt = f"سياق المحادثة:\n{context}\n\nالسؤال الجديد: {text}" if context else text
+                
+                response = model.generate_content(prompt)
+                
+                with global_lock:
+                    conversations[user_id]["history"].append(f"المستخدم: {text}")
+                    conversations[user_id]["history"].append(f"البوت: {response.text}")
+                    conversations[user_id]["last_active"] = time.time()
+                
+                send_message(sender_id, response.text)
+                
+            except Exception as e:
+                logger.error(f"خطأ في الذكاء الاصطناعي: {str(e)}")
+                send_message(sender_id, "⚠️ حدث خطأ أثناء معالجة سؤالك، يرجى المحاولة لاحقاً")
 
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
@@ -306,7 +293,24 @@ def webhook():
                 # معالجة الرسائل
                 if 'message' in event:
                     message = event['message']
-                    process_user_message(sender_id, user_id, message)
+                    
+                    # التحقق من مستخدم جديد
+                    with global_lock:
+                        if user_id not in conversations:
+                            handle_new_user(sender_id, user_id)
+                    
+                    # معالجة الصور
+                    if 'attachments' in message:
+                        for attachment in message['attachments']:
+                            if attachment['type'] == 'image':
+                                image_url = attachment['payload']['url']
+                                process_image_message(sender_id, user_id, image_url)
+                    
+                    # معالجة النصوص
+                    elif 'text' in message:
+                        text = message['text'].strip()
+                        if text:
+                            process_text_message(sender_id, user_id, text)
     
     except Exception as e:
         logger.error(f"خطأ في الويب هوك: {str(e)}")
@@ -315,7 +319,7 @@ def webhook():
 
 @app.route('/')
 def home():
-    return "Facebook AI Bot - معالجة صور ونصوص لكل مستخدم بشكل منفصل"
+    return "Facebook AI Bot - Image Analysis & Text Processing"
 
 if __name__ == '__main__':
     setup_messenger_profile()
