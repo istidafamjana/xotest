@@ -1,6 +1,5 @@
-Flask
+flask
 requests
 google-generativeai
 python-dotenv
 Werkzeug
-sqlite3
