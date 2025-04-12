@@ -1,127 +1,54 @@
-<!DOCTYPE html>
-<html lang="ar" dir="rtl">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DeepSeek العربي</title>
-    <style>
-        :root {
-            --primary: #6e48aa;
-            --secondary: #9d50bb;
-            --accent: #4776E6;
-            --dark: #1A1A2E;
-            --light: #F1F1F1;
-        }
-        body {
-            font-family: 'Tajawal', sans-serif;
-            background: linear-gradient(135deg, var(--dark), #16213E);
-            color: white;
-            margin: 0;
-            padding: 0;
-            perspective: 1000px;
-        }
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 2rem;
-            transform-style: preserve-3d;
-        }
-        header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 1rem 0;
-            transform: translateZ(50px);
-        }
-        .logo {
-            font-size: 2rem;
-            font-weight: 700;
-            background: linear-gradient(to right, var(--primary), var(--accent));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        .hero {
-            text-align: center;
-            padding: 5rem 0;
-            transform: translateZ(100px);
-        }
-        h1 {
-            font-size: 3.5rem;
-            margin-bottom: 1rem;
-            background: linear-gradient(to right, #fff, #ddd);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        .btn {
-            display: inline-block;
-            padding: 0.8rem 2rem;
-            background: linear-gradient(to right, var(--primary), var(--secondary));
-            color: white;
-            border-radius: 50px;
-            text-decoration: none;
-            font-weight: bold;
-            margin: 1rem;
-            transition: all 0.3s;
-            box-shadow: 0 10px 20px rgba(0,0,0,0.2);
-            transform: translateZ(20px);
-        }
-        .btn:hover {
-            transform: translateY(-5px) translateZ(30px);
-            box-shadow: 0 15px 30px rgba(0,0,0,0.3);
-        }
-        .features {
-            display: flex;
-            flex-wrap: wrap;
-            justify-content: center;
-            gap: 2rem;
-            margin: 5rem 0;
-        }
-        .feature-card {
-            background: rgba(255,255,255,0.1);
-            backdrop-filter: blur(10px);
-            border-radius: 20px;
-            padding: 2rem;
-            width: 300px;
-            transition: all 0.3s;
-            transform-style: preserve-3d;
-            border: 1px solid rgba(255,255,255,0.1);
-        }
-        .feature-card:hover {
-            transform: translateY(-10px) translateZ(20px);
-            background: rgba(255,255,255,0.15);
-        }
-    </style>
-    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700&display=swap" rel="stylesheet">
-</head>
-<body>
-    <div class="container">
-        <header>
-            <div class="logo">DeepSeek</div>
-            <nav>
-                <a href="/chat" class="btn">تجربة البوت</a>
-            </nav>
-        </header>
+{% extends "base.html" %}
 
-        <section class="hero">
-            <h1>ذكاء اصطناعي متقدم</h1>
-            <p>تجربة محادثة فريدة مع تقنية Gemini المتطورة</p>
-            <a href="/chat" class="btn">ابدأ المحادثة الآن</a>
-        </section>
+{% block title %}OTH IA - الرئيسية{% endblock %}
 
-        <section class="features">
-            <div class="feature-card">
-                <h3>تحليل الصور</h3>
-                <p>فهم محتوى الصور وتحليلها بدقة عالية</p>
-            </div>
-            <div class="feature-card">
-                <h3>ذاكرة المحادثة</h3>
-                <p>يتذكر البوت سياق الحديث لمدة 5 ساعات</p>
-            </div>
-            <div class="feature-card">
-                <h3>دعم متعدد</h3>
-                <p>يعمل على الماسنجر وموقع ويب متكامل</p>
-            </div>
-        </section>
+{% block content %}
+<div class="hero">
+    <h1>مرحباً بكم في OTH IA</h1>
+    <p>منصة الذكاء الاصطناعي المتقدمة للغة العربية</p>
+    <a href="{{ url_for('chat') }}" class="btn btn-primary">
+        <i class="fas fa-comment-dots"></i> ابدأ الدردشة الآن
+    </a>
+</div>
+
+<div class="features">
+    <div class="feature-card">
+        <i class="fas fa-brain"></i>
+        <h3>ذكاء اصطناعي متقدم</h3>
+        <p>يعتمد على تقنية Gemini من جوجل لفهم وتحليل المحتوى بدقة عالية</p>
     </div>
-</body>
-</html>
+    <div class="feature-card">
+        <i class="fas fa-image"></i>
+        <h3>تحليل الصور</h3>
+        <p>القدرة على فهم محتوى الصور وتقديم وصف دقيق لها</p>
+    </div>
+    <div class="feature-card">
+        <i class="fas fa-history"></i>
+        <h3>ذاكرة المحادثة</h3>
+        <p>يتذكر سياق الحديث لمدة تصل إلى 5 ساعات لكل مستخدم</p>
+    </div>
+</div>
+
+<div class="card">
+    <h3>كيفية استخدام OTH IA</h3>
+    <p>يمكنك استخدام البوت بعدة طرق:</p>
+    
+    <div class="code-block">
+        <pre><code class="language-python">
+# مثال على كود للتفاعل مع API
+import requests
+
+url = "https://oth-ia.com/api/chat"
+data = {
+    "message": "ما هو الذكاء الاصطناعي؟",
+    "user_id": "123"
+}
+
+response = requests.post(url, json=data)
+print(response.json())
+        </code></pre>
+    </div>
+    
+    <p class="typing-effect">جرب إرسال: "ما هو الذكاء الاصطناعي؟" لتحصل على إجابة مفصلة...</p>
+</div>
+{% endblock %}
