@@ -1,10 +1,6 @@
-flask
-requests
-google-generativeai
-pillow
-python-dotenv
-Flask-SQLAlchemy
-google-generativeai
-werkzeug
-Flask
-
+Flask==2.3.2
+requests==2.31.0
+google-generativeai==0.3.2
+python-dotenv==1.0.0
+Werkzeug==2.3.7
+sqlite3==2.6.0
