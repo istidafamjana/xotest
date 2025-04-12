@@ -1,13 +1,14 @@
 from flask import Flask, request, jsonify
 import requests
 import google.generativeai as genai
+from datetime import datetime, timedelta
 import logging
 import tempfile
 import urllib.request
 import os
+import json
 import hashlib
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
 
@@ -26,8 +27,6 @@ model = genai.GenerativeModel('gemini-1.5-flash')
 
 # تخزين المحادثات المؤقتة
 conversations = {}
-CONVERSATION_TIMEOUT = 5 * 60 * 60  # 5 ساعات بالثواني
-executor = ThreadPoolExecutor(4)  # لتحسين الأداء
 
 def get_user_id(sender_id):
     """إنشاء معرف فريد للمستخدم"""
@@ -48,15 +47,13 @@ def setup_messenger_profile():
                         "type": "web_url",
                         "title": "🌐 الموقع الرسمي",
                         "url": "https://oth-ia.vercel.app",
-                        "webview_height_ratio": "full",
-                        "messenger_extensions": True
+                        "webview_height_ratio": "full"
                     },
                     {
                         "type": "web_url",
                         "title": "📸 إنستجرام",
-                        "url": "https://instagram.com/mx.fo",
-                        "webview_height_ratio": "full",
-                        "messenger_extensions": True
+                        "url": "https://instagram.com/yourpage",
+                        "webview_height_ratio": "full"
                     },
                     {
                         "type": "postback",
@@ -111,8 +108,8 @@ def analyze_image(image_path, context=None):
         if image_path and os.path.exists(image_path):
             os.unlink(image_path)
 
-def send_message(recipient_id, message_text, buttons=None):
-    """إرسال رسالة مع أزرار"""
+def send_message(recipient_id, message_text, buttons=None, image_url=None):
+    """إرسال رسالة مع أزرار أو صورة"""
     url = f"https://graph.facebook.com/v17.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
     
     payload = {
@@ -121,7 +118,17 @@ def send_message(recipient_id, message_text, buttons=None):
         "messaging_type": "RESPONSE"
     }
 
-    if buttons:
+    if image_url:
+        payload["message"] = {
+            "attachment": {
+                "type": "image",
+                "payload": {
+                    "url": image_url,
+                    "is_reusable": True
+                }
+            }
+        }
+    elif buttons:
         payload["message"] = {
             "attachment": {
                 "type": "template",
@@ -150,7 +157,12 @@ def get_chat_context(user_id):
     return ""
 
 def handle_new_user(sender_id, user_id):
-    """معالجة المستخدم الجديد"""
+    """معالجة المستخدم الجديد مع رسالة ترحيبية متكاملة"""
+    # إرسال صورة الترحيب
+    welcome_image_url = "https://j.top4top.io/p_3382ckcex0.jpg"  # استبدل برابط صورتك
+    send_message(sender_id, "", image_url=welcome_image_url)
+    
+    # إرسال رسالة الترحيب مع الأزرار
     welcome_msg = """
     🎉 أهلاً بك في بوت الذكاء الاصطناعي المتقدم!
     
@@ -159,7 +171,8 @@ def handle_new_user(sender_id, user_id):
     • تحليل الصور ووصف محتواها
     • تذكر سياق المحادثة
     
-    💡 يمكنك البدء بإرسال رسالتك الآن
+    💡 اختر أحد الخيارات أدناه للبدء:
+  ✔️ إستعمل  messanger لتضهر الازرار 
     """
     
     send_message(sender_id, welcome_msg, buttons=[
@@ -169,11 +182,14 @@ def handle_new_user(sender_id, user_id):
             "payload": "GET_STARTED"
         },
         {
+            "type": "postback",
+            "title": "📚 شرح البوت",
+            "payload": "INFO_CMD"
+        },
+        {
             "type": "web_url",
-            "title": "🌐 الموقع الرسمي",
-            "url": "https://oth-ia.vercel.app",
-            "webview_height_ratio": "full",
-            "messenger_extensions": True
+            "title": "📞 تواصل معنا",
+            "url": "https://instagram.com/mx.fo"  # أو رابط الاتصال الخاص بك
         }
     ])
     
@@ -187,85 +203,48 @@ def handle_command(sender_id, user_id, command):
     """معالجة الأوامر"""
     if command == "GET_STARTED":
         start_msg = "مرحبًا! يمكنك البدء بإرسال أي سؤال أو صورة وسأساعدك."
-        send_message(sender_id, start_msg)
+        send_message(sender_id, start_msg, buttons=[
+            {
+                "type": "web_url",
+                "title": "🌐 زيارة الموقع",
+                "url": "https://oth-ia.vercel.app"
+            },
+            {
+                "type": "web_url",
+                "title": "📸 متابعة الإنستجرام",
+                "url": "https://instagram.com/mx.fo"
+            }
+        ])
         
     elif command == "INFO_CMD":
         info_msg = """
         ℹ️ معلومات عن البوت:
         
-        الإصدار: 5.0
+        الإصدار: 4.0
         التقنية: Gemini AI من جوجل
         الميزات:
         - فهم الأسئلة المعقدة
         - تحليل الصور المتقدم
-        - دعم المحادثات الطويلة (تصل إلى 5 ساعات)
+        - دعم المحادثات الطويلة
         
         📅 آخر تحديث: 2024
         """
         send_message(sender_id, info_msg)
-
-def process_message(event):
-    """معالجة الرسائل في خيط منفصل لتحسين الأداء"""
-    sender_id = event['sender']['id']
-    user_id = get_user_id(sender_id)
-    current_time = time.time()
-    
-    # تنظيف المحادثات القديمة (أكثر من 5 ساعات)
-    for uid in list(conversations.keys()):
-        if current_time - conversations[uid]["last_active"] > CONVERSATION_TIMEOUT:
-            del conversations[uid]
-    
-    if 'postback' in event:
-        handle_command(sender_id, user_id, event['postback']['payload'])
-        return
-    
-    if 'message' in event:
-        message = event['message']
         
-        if user_id not in conversations:
-            handle_new_user(sender_id, user_id)
-            return
-        
-        conversations[user_id]["last_active"] = current_time
-        
-        if 'attachments' in message:
-            for attachment in message['attachments']:
-                if attachment['type'] == 'image':
-                    send_message(sender_id, "🔍 جاري تحليل الصورة...")
-                    image_url = attachment['payload']['url']
-                    image_path = download_image(image_url)
-                    
-                    if image_path:
-                        context = get_chat_context(user_id)
-                        analysis = analyze_image(image_path, context)
-                        
-                        if analysis:
-                            conversations[user_id]["history"].append(f"صورة: {analysis[:200]}...")
-                            send_message(sender_id, f"📸 تحليل الصورة:\n\n{analysis}")
-                        else:
-                            send_message(sender_id, "⚠️ لم أتمكن من تحليل الصورة")
-            return
-        
-        if 'text' in message:
-            user_message = message['text'].strip()
-            
-            if user_message.lower() in ['مساعدة', 'help']:
-                handle_command(sender_id, user_id, "INFO_CMD")
-            else:
-                try:
-                    context = get_chat_context(user_id)
-                    prompt = f"سياق المحادثة:\n{context}\n\nالسؤال الجديد: {user_message}" if context else user_message
-                    
-                    response = model.generate_content(prompt)
-                    
-                    conversations[user_id]["history"].append(f"المستخدم: {user_message}")
-                    conversations[user_id]["history"].append(f"البوت: {response.text}")
-                    
-                    send_message(sender_id, response.text)
-                    
-                except Exception as e:
-                    logger.error(f"خطأ في الذكاء الاصطناعي: {str(e)}")
-                    send_message(sender_id, "⚠️ حدث خطأ أثناء معالجة سؤالك")
+    elif command == "CONNECT_CMD":
+        connect_msg = "يمكنك متابعتنا على:"
+        send_message(sender_id, connect_msg, buttons=[
+            {
+                "type": "web_url",
+                "title": "📸 إنستجرام",
+                "url": "https://instagram.com/mx.fo"
+            },
+            {
+                "type": "web_url",
+                "title": "🌐 الموقع الرسمي",
+                "url": "https://oth-ia.vercel.app"
+            }
+        ])
 
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
@@ -282,7 +261,88 @@ def webhook():
     try:
         for entry in data.get('entry', []):
             for event in entry.get('messaging', []):
-                executor.submit(process_message, event)  # معالجة كل رسالة في خيط منفصل
+                sender_id = event['sender']['id']
+                user_id = get_user_id(sender_id)
+                current_time = time.time()
+                
+                # تنظيف المحادثات القديمة (أكثر من ساعة)
+                for uid in list(conversations.keys()):
+                    if current_time - conversations[uid]["last_active"] > 3600:
+                        del conversations[uid]
+                
+                # معالجة Postback (أزرار القائمة)
+                if 'postback' in event:
+                    handle_command(sender_id, user_id, event['postback']['payload'])
+                    continue
+                    
+                # معالجة الرسائل
+                if 'message' in event:
+                    message = event['message']
+                    
+                    # التحقق من مستخدم جديد
+                    if user_id not in conversations:
+                        handle_new_user(sender_id, user_id)
+                        continue
+                    
+                    # تحديث وقت النشاط
+                    conversations[user_id]["last_active"] = current_time
+                    
+                    # معالجة الصور
+                    if 'attachments' in message:
+                        for attachment in message['attachments']:
+                            if attachment['type'] == 'image':
+                                send_message(sender_id, "🔍 جاري تحليل الصورة...")
+                                image_url = attachment['payload']['url']
+                                image_path = download_image(image_url)
+                                
+                                if image_path:
+                                    context = get_chat_context(user_id)
+                                    analysis = analyze_image(image_path, context)
+                                    
+                                    if analysis:
+                                        conversations[user_id]["history"].append(f"صورة: {analysis[:200]}...")
+                                        send_message(sender_id, f"📸 تحليل الصورة:\n\n{analysis}")
+                                    else:
+                                        send_message(sender_id, "⚠️ لم أتمكن من تحليل الصورة")
+                        continue
+                    
+                    # معالجة النصوص
+                    if 'text' in message:
+                        user_message = message['text'].strip()
+                        
+                        # الأوامر النصية
+                        if user_message.lower() in ['مساعدة', 'help']:
+                            handle_command(sender_id, user_id, "HELP_CMD")
+                        elif user_message.lower() in ['إعادة', 'restart']:
+                            handle_command(sender_id, user_id, "RESTART_CMD")
+                        elif user_message.lower() in ['تواصل', 'connect']:
+                            handle_command(sender_id, user_id, "CONNECT_CMD")
+                        elif user_message.lower() in ['موقع', 'web']:
+                            send_message(sender_id, "🌐 يمكنك زيارة موقعنا:", buttons=[
+                                {
+                                    "type": "web_url",
+                                    "title": "الموقع الرسمي",
+                                    "url": "https://oth-ia.vercel.app"
+                                }
+                            ])
+                        elif user_message.lower() in ['شرح', 'info']:
+                            handle_command(sender_id, user_id, "INFO_CMD")
+                        else:
+                            # معالجة الأسئلة مع السياق
+                            try:
+                                context = get_chat_context(user_id)
+                                prompt = f"سياق المحادثة:\n{context}\n\nالسؤال الجديد: {user_message}" if context else user_message
+                                
+                                response = model.generate_content(prompt)
+                                
+                                conversations[user_id]["history"].append(f"المستخدم: {user_message}")
+                                conversations[user_id]["history"].append(f"البوت: {response.text}")
+                                
+                                send_message(sender_id, response.text)
+                                
+                            except Exception as e:
+                                logger.error(f"خطأ في الذكاء الاصطناعي: {str(e)}")
+                                send_message(sender_id, "⚠️ حدث خطأ أثناء معالجة سؤالك")
     
     except Exception as e:
         logger.error(f"خطأ في الويب هوك: {str(e)}")
