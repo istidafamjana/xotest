@@ -13,7 +13,7 @@ import json
 from functools import wraps
 
 app = Flask(__name__)
-app.secret_key = 'your_very_secure_secret_key_here'
+app.secret_key = '1231234'
 app.permanent_session_lifetime = timedelta(hours=5)  # جلسة لمدة 5 ساعات
 
 # تكوين السجلات
