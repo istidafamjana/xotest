@@ -7,7 +7,7 @@ import urllib.request
 import os
 import hashlib
 import time
-from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 
 app = Flask(__name__)
 
@@ -27,13 +27,19 @@ model = genai.GenerativeModel('gemini-1.5-flash')
 # تخزين المحادثات المؤقتة
 conversations = {}
 CONVERSATION_TIMEOUT = 5 * 60 * 60  # 5 ساعات بالثواني
-
-# تنفيذ المهام بشكل متوازي
-executor = ThreadPoolExecutor(max_workers=5)
+user_locks = {}  # أقفال لكل مستخدم
+global_lock = Lock()  # قفل عام للوصول إلى conversations
 
 def get_user_id(sender_id):
     """إنشاء معرف فريد للمستخدم"""
     return hashlib.md5(sender_id.encode()).hexdigest()
+
+def get_user_lock(user_id):
+    """الحصول على قفل للمستخدم"""
+    with global_lock:
+        if user_id not in user_locks:
+            user_locks[user_id] = Lock()
+        return user_locks[user_id]
 
 def setup_messenger_profile():
     """إعداد واجهة الماسنجر مع القائمة الدائمة والمظهر"""
@@ -50,15 +56,13 @@ def setup_messenger_profile():
                         "type": "web_url",
                         "title": "🌐 الموقع الرسمي",
                         "url": "https://oth-ia.vercel.app",
-                        "webview_height_ratio": "full",
-                        "messenger_extensions": True
+                        "webview_height_ratio": "full"
                     },
                     {
                         "type": "web_url",
                         "title": "📸 إنستجرام",
                         "url": "https://instagram.com/mx.fo",
-                        "webview_height_ratio": "full",
-                        "messenger_extensions": True
+                        "webview_height_ratio": "full"
                     },
                     {
                         "type": "postback",
@@ -147,98 +151,111 @@ def send_message(recipient_id, message_text, buttons=None):
 
 def get_chat_context(user_id):
     """الحصول على سياق المحادثة (آخر 5 رسائل)"""
-    if user_id in conversations:
-        return "\n".join(conversations[user_id]["history"][-5:])
-    return ""
+    with global_lock:
+        if user_id in conversations:
+            return "\n".join(conversations[user_id]["history"][-5:])
+        return ""
 
 def handle_new_user(sender_id, user_id):
     """معالجة المستخدم الجديد"""
     welcome_msg = """
     🎉 أهلاً بك في بوت الذكاء الاصطناعي المتقدم!
     
-    🤖 ما يمكنني فعله لك:
+    🤖 ما يمكنني فعلك لك:
     • الإجابة على أسئلتك بذكاء
     • تحليل الصور ووصف محتواها
-    • تذكر سياق المحادثة
+    • تذكر سياق المحادثة (حتى 5 ساعات)
     
     💡 يمكنك البدء بإرسال رسالتك الآن
     """
     
-    send_message(sender_id, welcome_msg)
+    with global_lock:
+        conversations[user_id] = {
+            "history": ["بدأ المستخدم محادثة جديدة"],
+            "last_active": time.time()
+        }
     
-    # بدء محادثة جديدة
-    conversations[user_id] = {
-        "history": ["بدأ المستخدم محادثة جديدة"],
-        "last_active": time.time()
-    }
+    send_message(sender_id, welcome_msg)
 
 def handle_command(sender_id, user_id, command):
     """معالجة الأوامر"""
-    if command == "GET_STARTED":
-        start_msg = "مرحبًا! يمكنك البدء بإرسال أي سؤال أو صورة وسأساعدك."
-        send_message(sender_id, start_msg)
-        
-    elif command == "INFO_CMD":
-        info_msg = """
-        ℹ️ معلومات عن البوت:
-        
-        الإصدار: 5.0
-        التقنية: Gemini AI من جوجل
-        الميزات:
-        - فهم الأسئلة المعقدة
-        - تحليل الصور المتقدم
-        - دعم المحادثات الطويلة (تصل إلى 5 ساعات)
-        
-        📅 آخر تحديث: 2024
-        """
-        send_message(sender_id, info_msg)
+    user_lock = get_user_lock(user_id)
+    
+    with user_lock:
+        if command == "GET_STARTED":
+            start_msg = "مرحبًا! يمكنك البدء بإرسال أي سؤال أو صورة وسأساعدك."
+            send_message(sender_id, start_msg)
+            
+        elif command == "INFO_CMD":
+            info_msg = """
+            ℹ️ معلومات عن البوت:
+            
+            الإصدار: 5.0
+            التقنية: Gemini AI من جوجل
+            الميزات:
+            - فهم الأسئلة المعقدة
+            - تحليل الصور المتقدم
+            - دعم جلسات فردية لكل مستخدم
+            
+            📅 آخر تحديث: 2024
+            """
+            send_message(sender_id, info_msg)
 
-def process_message(sender_id, user_id, message):
-    """معالجة الرسائل بشكل منفصل لزيادة السرعة"""
-    # تحديث وقت النشاط
-    conversations[user_id]["last_active"] = time.time()
+def process_user_message(sender_id, user_id, message):
+    """معالجة رسالة المستخدم بشكل تسلسلي"""
+    user_lock = get_user_lock(user_id)
     
-    # معالجة الصور
-    if 'attachments' in message:
-        for attachment in message['attachments']:
-            if attachment['type'] == 'image':
-                send_message(sender_id, "🔍 جاري تحليل الصورة...")
-                image_url = attachment['payload']['url']
-                image_path = download_image(image_url)
+    with user_lock:
+        # تحديث وقت النشاط
+        with global_lock:
+            if user_id not in conversations:
+                handle_new_user(sender_id, user_id)
+                return
                 
-                if image_path:
-                    context = get_chat_context(user_id)
-                    analysis = analyze_image(image_path, context)
-                    
-                    if analysis:
-                        conversations[user_id]["history"].append(f"صورة: {analysis[:200]}...")
-                        send_message(sender_id, f"📸 تحليل الصورة:\n\n{analysis}")
-                    else:
-                        send_message(sender_id, "⚠️ لم أتمكن من تحليل الصورة")
-        return
-    
-    # معالجة النصوص
-    if 'text' in message:
-        user_message = message['text'].strip()
+            conversations[user_id]["last_active"] = time.time()
         
-        # الأوامر النصية
-        if user_message.lower() in ['مساعدة', 'help']:
-            handle_command(sender_id, user_id, "INFO_CMD")
-        else:
-            try:
-                context = get_chat_context(user_id)
-                prompt = f"سياق المحادثة:\n{context}\n\nالسؤال الجديد: {user_message}" if context else user_message
-                
-                response = model.generate_content(prompt)
-                
-                conversations[user_id]["history"].append(f"المستخدم: {user_message}")
-                conversations[user_id]["history"].append(f"البوت: {response.text}")
-                
-                send_message(sender_id, response.text)
-                
-            except Exception as e:
-                logger.error(f"خطأ في الذكاء الاصطناعي: {str(e)}")
-                send_message(sender_id, "⚠️ حدث خطأ أثناء معالجة سؤالك")
+        # معالجة الصور
+        if 'attachments' in message:
+            for attachment in message['attachments']:
+                if attachment['type'] == 'image':
+                    send_message(sender_id, "🔍 جاري تحليل الصورة...")
+                    image_url = attachment['payload']['url']
+                    image_path = download_image(image_url)
+                    
+                    if image_path:
+                        context = get_chat_context(user_id)
+                        analysis = analyze_image(image_path, context)
+                        
+                        if analysis:
+                            with global_lock:
+                                conversations[user_id]["history"].append(f"صورة: {analysis[:200]}...")
+                            send_message(sender_id, f"📸 تحليل الصورة:\n\n{analysis}")
+                        else:
+                            send_message(sender_id, "⚠️ لم أتمكن من تحليل الصورة")
+            return
+        
+        # معالجة النصوص
+        if 'text' in message:
+            user_message = message['text'].strip()
+            
+            if user_message.lower() in ['مساعدة', 'help']:
+                handle_command(sender_id, user_id, "INFO_CMD")
+            else:
+                try:
+                    context = get_chat_context(user_id)
+                    prompt = f"سياق المحادثة:\n{context}\n\nالسؤال الجديد: {user_message}" if context else user_message
+                    
+                    response = model.generate_content(prompt)
+                    
+                    with global_lock:
+                        conversations[user_id]["history"].append(f"المستخدم: {user_message}")
+                        conversations[user_id]["history"].append(f"البوت: {response.text}")
+                    
+                    send_message(sender_id, response.text)
+                    
+                except Exception as e:
+                    logger.error(f"خطأ في الذكاء الاصطناعي: {str(e)}")
+                    send_message(sender_id, "⚠️ حدث خطأ أثناء معالجة سؤالك")
 
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
@@ -260,9 +277,12 @@ def webhook():
                 current_time = time.time()
                 
                 # تنظيف المحادثات القديمة (أكثر من 5 ساعات)
-                for uid in list(conversations.keys()):
-                    if current_time - conversations[uid]["last_active"] > CONVERSATION_TIMEOUT:
-                        del conversations[uid]
+                with global_lock:
+                    for uid in list(conversations.keys()):
+                        if current_time - conversations[uid]["last_active"] > CONVERSATION_TIMEOUT:
+                            del conversations[uid]
+                            if uid in user_locks:
+                                del user_locks[uid]
                 
                 # معالجة Postback (أزرار القائمة)
                 if 'postback' in event:
@@ -272,14 +292,7 @@ def webhook():
                 # معالجة الرسائل
                 if 'message' in event:
                     message = event['message']
-                    
-                    # التحقق من مستخدم جديد
-                    if user_id not in conversations:
-                        handle_new_user(sender_id, user_id)
-                        continue
-                    
-                    # معالجة الرسالة بشكل متوازي
-                    executor.submit(process_message, sender_id, user_id, message)
+                    process_user_message(sender_id, user_id, message)
     
     except Exception as e:
         logger.error(f"خطأ في الويب هوك: {str(e)}")
@@ -288,7 +301,7 @@ def webhook():
 
 @app.route('/')
 def home():
-    return "Facebook AI Bot with Complete Features"
+    return "Facebook AI Bot - Single Threaded per User"
 
 if __name__ == '__main__':
     setup_messenger_profile()
