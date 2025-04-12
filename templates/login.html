@@ -1,32 +1,54 @@
-{% extends "base.html" %}
-
-{% block title %}OTH IA - تسجيل الدخول{% endblock %}
-
-{% block content %}
-<div class="auth-container">
-    <div class="auth-header">
-        <h2><i class="fas fa-sign-in-alt"></i> تسجيل الدخول</h2>
-        <p>الرجاء إدخال بياناتك للوصول إلى حسابك</p>
-    </div>
-    
-    <form method="POST" action="{{ url_for('login') }}">
-        <div class="form-group">
-            <label for="username">اسم المستخدم</label>
-            <input type="text" class="form-control" id="username" name="username" required>
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>تسجيل الدخول - OTH IA</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="auth-page">
+    <div class="auth-container">
+        <div class="auth-logo">
+            <img src="{{ url_for('static', filename='images/logo.png') }}" alt="OTH IA">
+            <h1>OTH IA</h1>
         </div>
         
-        <div class="form-group">
-            <label for="password">كلمة المرور</label>
-            <input type="password" class="form-control" id="password" name="password" required>
-        </div>
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }}">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
         
-        <button type="submit" class="btn btn-primary" style="width: 100%;">
-            <i class="fas fa-sign-in-alt"></i> تسجيل الدخول
-        </button>
-    </form>
-    
-    <div class="auth-footer mt-4">
-        <p>ليس لديك حساب؟ <a href="{{ url_for('register') }}">إنشاء حساب جديد</a></p>
+        <form method="POST" class="auth-form">
+            <div class="form-group">
+                <label for="username"><i class="fas fa-user"></i> اسم المستخدم</label>
+                <input type="text" id="username" name="username" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="password"><i class="fas fa-lock"></i> كلمة المرور</label>
+                <input type="password" id="password" name="password" required>
+            </div>
+            
+            <button type="submit" class="auth-btn">تسجيل الدخول</button>
+            
+            <div class="auth-links">
+                <a href="{{ url_for('register') }}">إنشاء حساب جديد</a>
+                <a href="#">نسيت كلمة المرور؟</a>
+            </div>
+        </form>
     </div>
-</div>
-{% endblock %}
+    
+    <div class="auth-bg">
+        <div class="bg-shapes">
+            <div class="shape-1"></div>
+            <div class="shape-2"></div>
+            <div class="shape-3"></div>
+        </div>
+    </div>
+</body>
+</html>
