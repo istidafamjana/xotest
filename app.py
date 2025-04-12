@@ -317,4 +317,4 @@ def home():
 
 if __name__ == '__main__':
     setup_messenger_profile()
-    app.run(debug=True)
+    app.run()
