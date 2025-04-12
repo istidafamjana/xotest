@@ -188,6 +188,22 @@ def webhook():
     
     return jsonify({"status": "ok"}), 200
 
+@app.route('/api/chat', methods=['POST'])
+def api_chat():
+    try:
+        data = request.json
+        user_message = data.get('message', '').strip()
+        
+        if not user_message:
+            return jsonify({"reply": "الرجاء إدخال رسالة صالحة"}), 400
+        
+        response = model.generate_content(user_message)
+        return jsonify({"reply": response.text}), 200
+        
+    except Exception as e:
+        logger.error(f"API Error: {str(e)}")
+        return jsonify({"reply": "حدث خطأ أثناء معالجة طلبك"}), 500
+
 # روابط الموقع
 @app.route('/')
 def home():
