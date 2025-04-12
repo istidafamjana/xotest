@@ -1,164 +1,139 @@
-<!DOCTYPE html>
-<html lang="ar" dir="rtl">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DeepSeek - الدردشة</title>
-    <style>
-        :root {
-            --primary: #6e48aa;
-            --secondary: #9d50bb;
-            --accent: #4776E6;
-            --dark: #1A1A2E;
-            --light: #F1F1F1;
-        }
-        body {
-            font-family: 'Tajawal', sans-serif;
-            background: linear-gradient(135deg, var(--dark), #16213E);
-            color: white;
-            margin: 0;
-            padding: 0;
-            height: 100vh;
-            display: flex;
-            flex-direction: column;
-        }
-        .chat-container {
-            max-width: 900px;
-            margin: 2rem auto;
-            background: rgba(255,255,255,0.1);
-            backdrop-filter: blur(10px);
-            border-radius: 20px;
-            overflow: hidden;
-            box-shadow: 0 20px 50px rgba(0,0,0,0.3);
-            flex-grow: 1;
-            display: flex;
-            flex-direction: column;
-            border: 1px solid rgba(255,255,255,0.1);
-            transform-style: preserve-3d;
-        }
-        .chat-header {
-            padding: 1.5rem;
-            background: linear-gradient(to right, var(--primary), var(--secondary));
-            text-align: center;
-            font-size: 1.5rem;
-            font-weight: bold;
-        }
-        .chat-messages {
-            flex-grow: 1;
-            padding: 1.5rem;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column;
-            gap: 1rem;
-        }
-        .message {
-            max-width: 70%;
-            padding: 1rem 1.5rem;
-            border-radius: 20px;
-            animation: fadeIn 0.3s ease-out;
-            transform: translateZ(20px);
-        }
-        .user-message {
-            align-self: flex-end;
-            background: var(--accent);
-            border-bottom-right-radius: 5px;
-        }
-        .bot-message {
-            align-self: flex-start;
-            background: rgba(255,255,255,0.1);
-            border-bottom-left-radius: 5px;
-        }
-        .chat-input {
-            display: flex;
-            padding: 1rem;
-            background: rgba(0,0,0,0.2);
-        }
-        #message-input {
-            flex-grow: 1;
-            padding: 0.8rem 1.2rem;
-            border: none;
-            border-radius: 50px;
-            background: rgba(255,255,255,0.1);
-            color: white;
-            font-family: 'Tajawal', sans-serif;
-        }
-        #send-button {
-            margin-right: 1rem;
-            padding: 0 1.5rem;
-            background: linear-gradient(to right, var(--primary), var(--secondary));
-            color: white;
-            border: none;
-            border-radius: 50px;
-            cursor: pointer;
-            transition: all 0.3s;
-        }
-        #send-button:hover {
-            transform: scale(1.05);
-        }
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        .typing-indicator {
-            display: none;
-            padding: 1rem;
-            color: #aaa;
-            font-style: italic;
-        }
-    </style>
-    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700&display=swap" rel="stylesheet">
-</head>
-<body>
-    <div class="chat-container">
-        <div class="chat-header">
-            DeepSeek - الدردشة الذكية
-        </div>
-        <div class="chat-messages" id="chat-messages">
-            <div class="message bot-message">
-                مرحباً! أنا بوت DeepSeek، كيف يمكنني مساعدتك اليوم؟
+{% extends "base.html" %}
+
+{% block title %}OTH IA - الدردشة{% endblock %}
+
+{% block styles %}
+<style>
+    .chat-container {
+        height: calc(100vh - 180px);
+    }
+    
+    .message-time {
+        font-size: 0.7rem;
+        color: #777;
+        margin-top: 5px;
+    }
+    
+    .bot-message .message-time {
+        text-align: left;
+    }
+    
+    .user-message .message-time {
+        text-align: right;
+    }
+    
+    .message-content {
+        word-wrap: break-word;
+    }
+    
+    .code-in-message {
+        background: #282c34;
+        color: #abb2bf;
+        padding: 5px 10px;
+        border-radius: 3px;
+        font-family: 'Courier New', monospace;
+        font-size: 0.9rem;
+        display: inline-block;
+        margin: 5px 0;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="chat-container" id="chat-container">
+    <div class="chat-header">
+        <i class="fas fa-robot"></i> OTH IA - الدردشة الذكية
+    </div>
+    <div class="chat-messages" id="chat-messages">
+        {% for msg in conversations %}
+        <div class="message {% if msg.is_bot %}bot-message{% else %}user-message{% endif %}">
+            <div class="message-content">
+                {% if msg.is_bot and '```' in msg.message %}
+                    {% set parts = msg.message.split('```') %}
+                    {% for part in parts %}
+                        {% if loop.index % 2 == 0 %}
+                            <div class="code-in-message">{{ part }}</div>
+                        {% else %}
+                            {{ part }}
+                        {% endif %}
+                    {% endfor %}
+                {% else %}
+                    {{ msg.message }}
+                {% endif %}
+            </div>
+            <div class="message-time">
+                {{ msg.created_at.strftime('%H:%M') }}
             </div>
         </div>
-        <div class="typing-indicator" id="typing-indicator">
-            البوت يكتب...
-        </div>
-        <div class="chat-input">
-            <input type="text" id="message-input" placeholder="اكتب رسالتك هنا...">
-            <button id="send-button">إرسال</button>
-        </div>
+        {% endfor %}
     </div>
+    <div class="typing-indicator" id="typing-indicator">
+        <i class="fas fa-ellipsis-h"></i> OTH IA يكتب...
+    </div>
+    <div class="chat-input">
+        <input type="text" id="message-input" placeholder="اكتب رسالتك هنا...">
+        <button id="send-button"><i class="fas fa-paper-plane"></i></button>
+    </div>
+</div>
 
-    <script>
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
         const chatMessages = document.getElementById('chat-messages');
         const messageInput = document.getElementById('message-input');
         const sendButton = document.getElementById('send-button');
         const typingIndicator = document.getElementById('typing-indicator');
-
-        function addMessage(text, isUser) {
-            const messageDiv = document.createElement('div');
-            messageDiv.classList.add('message');
-            messageDiv.classList.add(isUser ? 'user-message' : 'bot-message');
-            messageDiv.textContent = text;
-            chatMessages.appendChild(messageDiv);
+        
+        function scrollToBottom() {
             chatMessages.scrollTop = chatMessages.scrollHeight;
         }
-
+        
+        function addMessage(message, isUser) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${isUser ? 'user-message' : 'bot-message'}`;
+            
+            let messageContent = message;
+            if (!isUser && message.includes('```')) {
+                const parts = message.split('```');
+                messageContent = '';
+                for (let i = 0; i < parts.length; i++) {
+                    if (i % 2 === 1) {
+                        messageContent += `<div class="code-in-message">${parts[i]}</div>`;
+                    } else {
+                        messageContent += parts[i];
+                    }
+                }
+            }
+            
+            const now = new Date();
+            const timeString = now.getHours().toString().padStart(2, '0') + ':' + 
+                              now.getMinutes().toString().padStart(2, '0');
+            
+            messageDiv.innerHTML = `
+                <div class="message-content">${messageContent}</div>
+                <div class="message-time">${timeString}</div>
+            `;
+            
+            chatMessages.appendChild(messageDiv);
+            scrollToBottom();
+        }
+        
         function simulateTyping() {
             typingIndicator.style.display = 'block';
-            chatMessages.scrollTop = chatMessages.scrollHeight;
+            scrollToBottom();
         }
-
+        
         function stopTyping() {
             typingIndicator.style.display = 'none';
         }
-
+        
         async function sendMessage() {
             const text = messageInput.value.trim();
             if (text === '') return;
-
+            
             addMessage(text, true);
             messageInput.value = '';
             simulateTyping();
-
+            
             try {
                 const response = await fetch('/api/chat', {
                     method: 'POST',
@@ -167,20 +142,41 @@
                     },
                     body: JSON.stringify({ message: text })
                 });
-
+                
                 const data = await response.json();
                 stopTyping();
-                addMessage(data.reply, false);
+                
+                // عرض الرد تدريجياً
+                const reply = data.reply;
+                let displayedText = '';
+                let i = 0;
+                const speed = 20; // سرعة الكتابة (أقل رقم = أسرع)
+                
+                function typeWriter() {
+                    if (i < reply.length) {
+                        displayedText += reply.charAt(i);
+                        addMessage(displayedText, false);
+                        i++;
+                        setTimeout(typeWriter, speed);
+                    }
+                }
+                
+                // مسح الرسالة المؤقتة
+                chatMessages.removeChild(chatMessages.lastChild);
+                typeWriter();
             } catch (error) {
                 stopTyping();
                 addMessage("⚠️ حدث خطأ في الاتصال بالخادم", false);
             }
         }
-
+        
         sendButton.addEventListener('click', sendMessage);
-        messageInput.addEventListener('keypress', (e) => {
+        messageInput.addEventListener('keypress', function(e) {
             if (e.key === 'Enter') sendMessage();
         });
-    </script>
-</body>
-</html>
+        
+        // التركيز على حقل الإدخال عند تحميل الصفحة
+        messageInput.focus();
+    });
+</script>
+{% endblock %}
