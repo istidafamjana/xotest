@@ -1,964 +1,427 @@
-from flask import Flask, request, jsonify, render_template_string, redirect, url_for, session, flash, send_from_directory
+# app.py
+from flask import Flask, request, jsonify, render_template_string, redirect, url_for, session, flash
 from werkzeug.security import generate_password_hash, check_password_hash
-from werkzeug.utils import secure_filename
 import google.generativeai as genai
-import logging
 import os
 import uuid
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from threading import Lock
-from functools import wraps
-import pytz
-from dateutil import parser
 import random
-import string
 import re
-from io import BytesIO
-import base64
-from PIL import Image
-import mimetypes
 
-# ===== التهيئة الأساسية =====
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', os.urandom(24).hex())
-app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=5)
-app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB
+app.config['PERMANENT_SESSION_LIFETIME'] = 3600 * 5  # 5 ساعات
 
-# ===== إعدادات السجل =====
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('app.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+# تهيئة نموذج Gemini
+genai.configure(api_key=os.environ.get('GEMINI_API_KEY'))
+model = genai.GenerativeModel('gemini-pro')
 
-# ===== تهيئة نموذج Gemini =====
-genai.configure(api_key="AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU")
-model = genai.GenerativeModel('gemini-1.5-flash')
+# تخزين البيانات (مؤقت - للتنمية فقط)
+users = {}
+conversations = {}
+db_lock = Lock()
 
-# ===== فئات التكوين =====
-class AppConfig:
-    class Security:
-        PASSWORD_HASH_METHOD = 'pbkdf2:sha256'
-        SALT_LENGTH = 16
-        SESSION_TOKEN_LENGTH = 32
-        CSRF_TOKEN_LENGTH = 32
+# ===== تصميم الموقع =====
+BASE_HTML = """
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{title} - Gemini AI</title>
+    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        :root {{
+            --primary: #6366f1;
+            --primary-dark: #4f46e5;
+            --dark: #1e293b;
+            --light: #f8fafc;
+        }}
+        body {{
+            font-family: 'Tajawal', sans-serif;
+            background-color: var(--light);
+            color: var(--dark);
+            transition: all 0.3s;
+        }}
+        body.dark {{
+            background-color: #0f172a;
+            color: #e2e8f0;
+        }}
+        .gradient-bg {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }}
+        .glow {{
+            animation: glow 2s infinite alternate;
+        }}
+        @keyframes glow {{
+            from {{
+                box-shadow: 0 0 5px rgba(99, 102, 241, 0.5);
+            }}
+            to {{
+                box-shadow: 0 0 20px rgba(99, 102, 241, 0.8);
+            }}
+        }}
+        .neon-text {{
+            text-shadow: 0 0 5px rgba(99, 102, 241, 0.8);
+        }}
+        .message-user {{
+            background: var(--primary);
+            color: white;
+            border-radius: 1rem 1rem 0 1rem;
+        }}
+        .message-bot {{
+            background: #e2e8f0;
+            color: var(--dark);
+            border-radius: 1rem 1rem 1rem 0;
+        }}
+        .dark .message-bot {{
+            background: #334155;
+            color: #e2e8f0;
+        }}
+    </style>
+</head>
+<body class="{dark_mode}">
+    <!-- إضاءات خلفية -->
+    <div class="fixed -z-10 inset-0 overflow-hidden">
+        <div class="absolute top-0 left-1/4 w-32 h-32 rounded-full bg-purple-500 opacity-20 blur-3xl"></div>
+        <div class="absolute bottom-0 right-1/4 w-64 h-64 rounded-full bg-indigo-500 opacity-20 blur-3xl"></div>
+    </div>
+
+    <div class="min-h-screen flex flex-col">
+        <nav class="bg-white/80 dark:bg-slate-800/80 backdrop-blur-md border-b border-gray-200 dark:border-slate-700">
+            <div class="max-w-6xl mx-auto px-4 py-3 flex justify-between items-center">
+                <a href="/" class="flex items-center space-x-2">
+                    <div class="w-8 h-8 gradient-bg rounded-full flex items-center justify-center text-white font-bold">G</div>
+                    <span class="text-xl font-bold bg-gradient-to-r from-indigo-500 to-purple-500 bg-clip-text text-transparent">Gemini AI</span>
+                </a>
+                <div class="flex items-center space-x-4">
+                    <button id="theme-toggle" class="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-slate-700">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-gray-700 dark:text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+                        </svg>
+                    </button>
+                    {auth_buttons}
+                </div>
+            </div>
+        </nav>
+
+        <main class="flex-grow max-w-6xl mx-auto px-4 py-8 w-full">
+            {flashes}
+            {content}
+        </main>
+
+        <footer class="bg-white/80 dark:bg-slate-800/80 backdrop-blur-md border-t border-gray-200 dark:border-slate-700 py-4">
+            <div class="max-w-6xl mx-auto px-4 text-center text-sm text-gray-600 dark:text-gray-400">
+                © {year} Gemini AI. جميع الحقوق محفوظة.
+            </div>
+        </footer>
+    </div>
+
+    <script>
+        // تبديل الوضع الليلي
+        const themeToggle = document.getElementById('theme-toggle');
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        const currentTheme = localStorage.getItem('theme') || (prefersDark ? 'dark' : 'light');
         
-    class Upload:
-        ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'pdf', 'txt', 'docx'}
-        MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+        if (currentTheme === 'dark') document.body.classList.add('dark');
         
-    class Conversation:
-        HISTORY_LIMIT = 10
-        TIMEOUT = 5 * 60 * 60  # 5 hours
-        MAX_MESSAGE_LENGTH = 2000
+        themeToggle.addEventListener('click', () => {
+            document.body.classList.toggle('dark');
+            const theme = document.body.classList.contains('dark') ? 'dark' : 'light';
+            localStorage.setItem('theme', theme);
+        });
 
-# ===== محاكاة قاعدة البيانات =====
-class Database:
-    def __init__(self):
-        self.users = {}
-        self.conversations = {}
-        self.files = {}
-        self.lock = Lock()
-        self.load_data()
+        // تأثيرات الإضاءة للعناصر
+        document.querySelectorAll('.glow-on-hover').forEach(el => {
+            el.addEventListener('mouseenter', () => {
+                el.classList.add('glow');
+            });
+            el.addEventListener('mouseleave', () => {
+                el.classList.remove('glow');
+            });
+        });
+    </script>
+    {additional_js}
+</body>
+</html>
+"""
+
+HOME_CONTENT = """
+<div class="flex flex-col items-center justify-center py-12 text-center">
+    <h1 class="text-4xl md:text-5xl font-bold mb-6 bg-gradient-to-r from-indigo-500 to-purple-500 bg-clip-text text-transparent">
+        ذكاء اصطناعي متقدم للجميع
+    </h1>
+    <p class="text-lg text-gray-600 dark:text-gray-400 mb-8 max-w-2xl">
+        تجربة محادثة ذكية وسريعة باستخدام أحدث تقنيات الذكاء الاصطناعي من جوجل
+    </p>
+    <div class="flex space-x-4">
+        <a href="/chat" class="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition-all glow-on-hover">
+            ابدأ المحادثة الآن
+        </a>
+        <a href="/about" class="px-6 py-3 border border-indigo-600 text-indigo-600 dark:text-indigo-400 dark:border-indigo-400 hover:bg-indigo-50 dark:hover:bg-slate-700 rounded-lg font-medium transition-all">
+            تعرف أكثر
+        </a>
+    </div>
+</div>
+
+<div class="mt-16 grid grid-cols-1 md:grid-cols-3 gap-8">
+    <div class="bg-white/80 dark:bg-slate-800/80 p-6 rounded-xl shadow-sm backdrop-blur-sm border border-gray-200 dark:border-slate-700">
+        <div class="w-12 h-12 gradient-bg rounded-lg flex items-center justify-center text-white mb-4">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+            </svg>
+        </div>
+        <h3 class="text-xl font-semibold mb-2">محادثة ذكية</h3>
+        <p class="text-gray-600 dark:text-gray-400">
+            تفاعل طبيعي مع ذكاء اصطناعي يفهم السياق ويتعلم من كل محادثة
+        </p>
+    </div>
+    
+    <div class="bg-white/80 dark:bg-slate-800/80 p-6 rounded-xl shadow-sm backdrop-blur-sm border border-gray-200 dark:border-slate-700">
+        <div class="w-12 h-12 gradient-bg rounded-lg flex items-center justify-center text-white mb-4">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2z" />
+            </svg>
+        </div>
+        <h3 class="text-xl font-semibold mb-2">وضع ليلي</h3>
+        <p class="text-gray-600 dark:text-gray-400">
+            تجربة مريحة للعين في كل الأوقات مع ميزة الوضع الليلي التلقائي
+        </p>
+    </div>
+    
+    <div class="bg-white/80 dark:bg-slate-800/80 p-6 rounded-xl shadow-sm backdrop-blur-sm border border-gray-200 dark:border-slate-700">
+        <div class="w-12 h-12 gradient-bg rounded-lg flex items-center justify-center text-white mb-4">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            </svg>
+        </div>
+        <h3 class="text-xl font-semibold mb-2">آمن وسريع</h3>
+        <p class="text-gray-600 dark:text-gray-400">
+            تشفير متقدم وسرعة فائقة مع بنية تحتية موزعة عالميًا
+        </p>
+    </div>
+</div>
+"""
+
+CHAT_CONTENT = """
+<div class="flex flex-col h-full">
+    <div class="flex justify-between items-center mb-6">
+        <h1 class="text-2xl font-bold text-indigo-600 dark:text-indigo-400">محادثة Gemini</h1>
+        <button id="new-chat" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm transition-all">
+            محادثة جديدة
+        </button>
+    </div>
+    
+    <div id="chat-container" class="flex-grow space-y-4 mb-6 overflow-y-auto max-h-[70vh] p-2">
+        {messages}
+    </div>
+    
+    <div class="sticky bottom-0 bg-white/80 dark:bg-slate-800/80 backdrop-blur-md pt-4 pb-2">
+        <form id="chat-form" class="flex space-x-2">
+            <input 
+                type="text" 
+                id="message-input" 
+                placeholder="اكتب رسالتك هنا..." 
+                class="flex-grow px-4 py-3 rounded-lg border border-gray-300 dark:border-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-slate-800 text-gray-800 dark:text-gray-200"
+                autocomplete="off"
+            >
+            <button 
+                type="submit" 
+                class="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition-all glow-on-hover"
+            >
+                إرسال
+            </button>
+        </form>
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-2 text-center">
+            Gemini قد يقدم معلومات غير دقيقة أحيانًا
+        </p>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    const chatForm = document.getElementById('chat-form');
+    const messageInput = document.getElementById('message-input');
+    const chatContainer = document.getElementById('chat-container');
+    const newChatBtn = document.getElementById('new-chat');
+    
+    // إرسال رسالة
+    chatForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const message = messageInput.value.trim();
+        if (!message) return;
         
-    def load_data(self):
-        try:
-            if os.path.exists('data/users.json'):
-                with open('data/users.json', 'r') as f:
-                    self.users = json.load(f)
-                    
-            if os.path.exists('data/conversations.json'):
-                with open('data/conversations.json', 'r') as f:
-                    self.conversations = json.load(f)
-                    
-            if os.path.exists('data/files.json'):
-                with open('data/files.json', 'r') as f:
-                    self.files = json.load(f)
-        except Exception as e:
-            logger.error(f"خطأ في تحميل البيانات: {str(e)}")
+        // إضافة رسالة المستخدم
+        addMessage('user', message);
+        messageInput.value = '';
+        
+        try {
+            // إرسال إلى الخادم
+            const response = await fetch('/api/chat', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ message })
+            });
             
-    def save_data(self):
-        try:
-            os.makedirs('data', exist_ok=True)
-            
-            with open('data/users.json', 'w') as f:
-                json.dump(self.users, f, indent=2)
-                
-            with open('data/conversations.json', 'w') as f:
-                json.dump(self.conversations, f, indent=2)
-                
-            with open('data/files.json', 'w') as f:
-                json.dump(self.files, f, indent=2)
-        except Exception as e:
-            logger.error(f"خطأ في حفظ البيانات: {str(e)}")
-            
-    def add_user(self, username, email, password):
-        user_id = str(uuid.uuid4())
-        self.users[username] = {
-            'id': user_id,
-            'username': username,
-            'email': email,
-            'password': generate_password_hash(
-                password,
-                method=AppConfig.Security.PASSWORD_HASH_METHOD,
-                salt_length=AppConfig.Security.SALT_LENGTH
-            ),
-            'created_at': datetime.now(pytz.utc).isoformat(),
-            'last_login': None,
-            'is_admin': False,
-            'profile': {
-                'avatar': None,
-                'bio': ''
+            const data = await response.json();
+            if (data.reply) {
+                addMessage('bot', data.reply);
+            } else {
+                throw new Error(data.error || 'حدث خطأ غير متوقع');
             }
+        } catch (error) {
+            addMessage('bot', 'عذرًا، حدث خطأ في معالجة طلبك. يرجى المحاولة لاحقًا.');
+            console.error('Error:', error);
         }
-        self.save_data()
-        return user_id
-        
-    def verify_user(self, username, password):
-        user = self.users.get(username)
-        if user and check_password_hash(user['password'], password):
-            return user
-        return None
-        
-    def get_conversation(self, user_id):
-        if user_id not in self.conversations:
-            self.conversations[user_id] = {
-                'history': [],
-                'created_at': datetime.now(pytz.utc).isoformat(),
-                'last_active': time.time()
-            }
-        return self.conversations[user_id]
-        
-    def add_file(self, user_id, filename, file_type, file_size):
-        file_id = str(uuid.uuid4())
-        self.files[file_id] = {
-            'user_id': user_id,
-            'filename': filename,
-            'file_type': file_type,
-            'file_size': file_size,
-            'uploaded_at': datetime.now(pytz.utc).isoformat()
+    });
+    
+    // محادثة جديدة
+    newChatBtn.addEventListener('click', () => {
+        if (confirm('هل تريد بدء محادثة جديدة؟ سيتم مسح سجل المحادثة الحالي.')) {
+            fetch('/api/new_chat', { method: 'POST' })
+                .then(() => location.reload())
+                .catch(err => console.error(err));
         }
-        self.save_data()
-        return file_id
+    });
+    
+    // إضافة رسالة إلى الواجهة
+    function addMessage(sender, text) {
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `flex ${sender === 'user' ? 'justify-end' : 'justify-start'}`;
         
-    def cleanup_old_conversations(self):
-        current_time = time.time()
-        to_delete = []
+        messageDiv.innerHTML = `
+            <div class="max-w-3/4 px-4 py-3 ${sender === 'user' ? 'message-user' : 'message-bot'}">
+                ${text.replace(/\n/g, '<br>')}
+            </div>
+        `;
         
-        for user_id, conv in self.conversations.items():
-            if current_time - conv['last_active'] > AppConfig.Conversation.TIMEOUT:
-                to_delete.append(user_id)
-                
-        for user_id in to_delete:
-            del self.conversations[user_id]
-            
-        self.save_data()
-        return len(to_delete)
+        chatContainer.appendChild(messageDiv);
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
+});
+</script>
+"""
 
-# ===== تهيئة قاعدة البيانات =====
-db = Database()
-
-# ===== وظائف مساعدة =====
-def allowed_file(filename):
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in AppConfig.Upload.ALLOWED_EXTENSIONS
-
-def generate_csrf_token():
-    return ''.join(random.choices(string.ascii_letters + string.digits, k=AppConfig.Security.CSRF_TOKEN_LENGTH))
-
-def format_timestamp(timestamp):
-    if isinstance(timestamp, str):
-        dt = parser.parse(timestamp)
-    else:
-        dt = datetime.fromtimestamp(timestamp, pytz.utc)
-    return dt.astimezone(pytz.timezone('Asia/Riyadh')).strftime('%Y-%m-%d %H:%M:%S')
-
-def process_image(file):
-    try:
-        img = Image.open(BytesIO(file.read()))
-        img.thumbnail((800, 800))
-        buffered = BytesIO()
-        img.save(buffered, format="JPEG", quality=85)
-        return base64.b64encode(buffered.getvalue()).decode('utf-8')
-    except Exception as e:
-        logger.error(f"خطأ في معالجة الصورة: {str(e)}")
-        return None
-
-# ===== وسائط الأمان =====
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if 'user_id' not in session:
-            flash('يجب تسجيل الدخول أولاً', 'danger')
-            return redirect(url_for('login', next=request.url))
-        return f(*args, **kwargs)
-    return decorated_function
-
-def admin_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if 'user_id' not in session or not db.users.get(session.get('username'), {}).get('is_admin'):
-            flash('غير مسموح بالوصول', 'danger')
-            return redirect(url_for('home'))
-        return f(*args, **kwargs)
-    return decorated_function
-
-# ===== مسارات الموقع =====
+# ===== مسارات التطبيق =====
 @app.route('/')
 def home():
-    return render_template_string(BASE_TEMPLATE, content=HOME_CONTENT, title="الرئيسية")
-
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        username = request.form.get('username', '').strip()
-        password = request.form.get('password', '').strip()
-        
-        user = db.verify_user(username, password)
-        if user:
-            session['user_id'] = user['id']
-            session['username'] = username
-            session['csrf_token'] = generate_csrf_token()
-            
-            user['last_login'] = datetime.now(pytz.utc).isoformat()
-            db.save_data()
-            
-            flash('تم تسجيل الدخول بنجاح!', 'success')
-            return redirect(url_for('dashboard'))
-        else:
-            flash('اسم المستخدم أو كلمة المرور غير صحيحة', 'danger')
+    dark_mode = 'dark' if request.cookies.get('theme') == 'dark' else ''
+    auth_buttons = """
+    <div class="flex space-x-2">
+        <a href="/login" class="px-4 py-2 text-indigo-600 dark:text-indigo-400 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-lg transition-all">
+            تسجيل الدخول
+        </a>
+        <a href="/register" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-all">
+            إنشاء حساب
+        </a>
+    </div>
+    """ if 'user_id' not in session else """
+    <a href="/chat" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-all">
+        الدردشة
+    </a>
+    """
     
-    return render_template_string(BASE_TEMPLATE, content=LOGIN_CONTENT, title="تسجيل الدخول")
-
-@app.route('/register', methods=['GET', 'POST'])
-def register():
-    if request.method == 'POST':
-        username = request.form.get('username', '').strip()
-        email = request.form.get('email', '').strip()
-        password = request.form.get('password', '').strip()
-        confirm_password = request.form.get('confirm_password', '').strip()
-        
-        if len(username) < 4:
-            flash('اسم المستخدم يجب أن يكون 4 أحرف على الأقل', 'danger')
-        elif not re.match(r'^[\w.@+-]+$', username):
-            flash('اسم المستخدم يحتوي على أحرف غير مسموحة', 'danger')
-        elif not re.match(r'^[^@]+@[^@]+\.[^@]+$', email):
-            flash('البريد الإلكتروني غير صالح', 'danger')
-        elif len(password) < 6:
-            flash('كلمة المرور يجب أن تكون 6 أحرف على الأقل', 'danger')
-        elif password != confirm_password:
-            flash('كلمات المرور غير متطابقة', 'danger')
-        elif username in db.users:
-            flash('اسم المستخدم موجود بالفعل', 'danger')
-        else:
-            user_id = db.add_user(username, email, password)
-            session['user_id'] = user_id
-            session['username'] = username
-            session['csrf_token'] = generate_csrf_token()
-            
-            flash('تم إنشاء الحساب بنجاح!', 'success')
-            return redirect(url_for('dashboard'))
-    
-    return render_template_string(BASE_TEMPLATE, content=REGISTER_CONTENT, title="إنشاء حساب")
-
-@app.route('/logout')
-@login_required
-def logout():
-    session.clear()
-    flash('تم تسجيل الخروج بنجاح', 'info')
-    return redirect(url_for('home'))
-
-@app.route('/dashboard')
-@login_required
-def dashboard():
-    user = db.users.get(session['username'])
-    conversation = db.get_conversation(session['user_id'])
-    
-    stats = {
-        'messages': len(conversation['history']),
-        'last_active': format_timestamp(conversation['last_active']),
-        'joined_date': format_timestamp(user['created_at'])
-    }
+    flashes = ''
+    if '_flashes' in session:
+        flashes = '<div class="mb-6 space-y-2">' + \
+                  ''.join(f'<div class="px-4 py-3 rounded-lg bg-{cat}-100 text-{cat}-800 dark:bg-{cat}-900 dark:text-{cat}-200">{msg}</div>' 
+                          for cat, msg in session['_flashes']) + \
+                  '</div>'
+        session.pop('_flashes')
     
     return render_template_string(
-        BASE_TEMPLATE,
-        content=DASHBOARD_CONTENT.format(
-            username=session['username'],
-            stats=stats
-        ),
-        title="لوحة التحكم"
+        BASE_HTML.format(
+            title="الرئيسية",
+            dark_mode=dark_mode,
+            auth_buttons=auth_buttons,
+            content=HOME_CONTENT,
+            flashes=flashes,
+            year=datetime.now().year,
+            additional_js=""
+        )
     )
-
-@app.route('/profile', methods=['GET', 'POST'])
-@login_required
-def profile():
-    user = db.users.get(session['username'])
-    
-    if request.method == 'POST':
-        bio = request.form.get('bio', '').strip()
-        avatar = request.files.get('avatar')
-        
-        if avatar and allowed_file(avatar.filename):
-            filename = secure_filename(f"{session['user_id']}_{avatar.filename}")
-            avatar.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-            user['profile']['avatar'] = filename
-            
-        user['profile']['bio'] = bio
-        db.save_data()
-        flash('تم تحديث الملف الشخصي بنجاح', 'success')
-        return redirect(url_for('profile'))
-    
-    return render_template_string(
-        BASE_TEMPLATE,
-        content=PROFILE_CONTENT.format(
-            username=user['username'],
-            email=user['email'],
-            bio=user['profile']['bio'],
-            avatar=user['profile']['avatar'] or 'default_avatar.png'
-        ),
-        title="الملف الشخصي"
-    )
-
-@app.route('/uploads/<filename>')
-@login_required
-def uploaded_file(filename):
-    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
 @app.route('/chat')
-@login_required
 def chat():
-    conversation = db.get_conversation(session['user_id'])
+    if 'user_id' not in session:
+        flash('يجب تسجيل الدخول أولاً', 'danger')
+        return redirect(url_for('login'))
+    
+    user_id = session['user_id']
+    with db_lock:
+        if user_id not in conversations:
+            conversations[user_id] = []
+        
+        messages_html = '\n'.join(
+            f'<div class="flex {"justify-end" if msg["sender"] == "user" else "justify-start"}">'
+            f'<div class="max-w-3/4 px-4 py-3 {"message-user" if msg["sender"] == "user" else "message-bot"}">'
+            f'{msg["text"].replace("\n", "<br>")}'
+            f'</div></div>'
+            for msg in conversations[user_id]
+        )
+    
+    dark_mode = 'dark' if request.cookies.get('theme') == 'dark' else ''
     return render_template_string(
-        BASE_TEMPLATE,
-        content=CHAT_CONTENT,
-        title="الدردشة",
-        messages=conversation['history']
+        BASE_HTML.format(
+            title="الدردشة",
+            dark_mode=dark_mode,
+            auth_buttons='<a href="/logout" class="text-indigo-600 dark:text-indigo-400 hover:underline">تسجيل الخروج</a>',
+            content=CHAT_CONTENT.format(messages=messages_html),
+            flashes='',
+            year=datetime.now().year,
+            additional_js=""
+        )
     )
 
 @app.route('/api/chat', methods=['POST'])
-@login_required
 def api_chat():
+    if 'user_id' not in session:
+        return jsonify({'error': 'غير مسموح'}), 401
+    
+    user_id = session['user_id']
     data = request.get_json()
     message = data.get('message', '').strip()
     
     if not message:
         return jsonify({'error': 'الرسالة فارغة'}), 400
     
-    with db.lock:
-        conversation = db.get_conversation(session['user_id'])
+    with db_lock:
+        if user_id not in conversations:
+            conversations[user_id] = []
         
-        conversation['history'].append({
+        conversations[user_id].append({
             'sender': 'user',
-            'message': message,
-            'timestamp': time.time()
+            'text': message,
+            'time': time.time()
         })
         
         try:
+            # استخدام آخر 5 رسائل كسياق
             context = "\n".join(
-                f"{msg['sender']}: {msg['message']}" 
-                for msg in conversation['history'][-AppConfig.Conversation.HISTORY_LIMIT:]
+                f"{msg['sender']}: {msg['text']}" 
+                for msg in conversations[user_id][-5:]
             )
             
             response = model.generate_content(f"{context}\n\nassistant:")
             reply = response.text
             
-            conversation['history'].append({
+            conversations[user_id].append({
                 'sender': 'bot',
-                'message': reply,
-                'timestamp': time.time()
+                'text': reply,
+                'time': time.time()
             })
-            conversation['last_active'] = time.time()
-            db.save_data()
             
-            return jsonify({
-                'reply': reply,
-                'timestamp': format_timestamp(time.time())
-            })
+            return jsonify({'reply': reply})
         except Exception as e:
-            logger.error(f"خطأ في الدردشة: {str(e)}")
-            return jsonify({'error': 'حدث خطأ أثناء معالجة رسالتك'}), 500
+            return jsonify({'error': str(e)}), 500
 
-@app.route('/files', methods=['GET', 'POST'])
-@login_required
-def files():
-    if request.method == 'POST':
-        file = request.files.get('file')
-        if file and allowed_file(file.filename):
-            filename = secure_filename(file.filename)
-            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            file.save(filepath)
-            
-            file_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
-            file_size = os.path.getsize(filepath)
-            
-            db.add_file(
-                session['user_id'],
-                filename,
-                file_type,
-                file_size
-            )
-            
-            flash('تم رفع الملف بنجاح', 'success')
-            return redirect(url_for('files'))
-        else:
-            flash('نوع الملف غير مسموح به', 'danger')
-    
-    user_files = [
-        f for f in db.files.values() 
-        if f['user_id'] == session['user_id']
-    ]
-    
-    return render_template_string(
-        BASE_TEMPLATE,
-        content=FILES_CONTENT.format(files=user_files),
-        title="الملفات"
-    )
-
-# ===== قوالب HTML =====
-BASE_TEMPLATE = """
-<!DOCTYPE html>
-<html dir="rtl" lang="ar">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{title} - OTH AI</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <style>
-        :root {
-            --primary-color: #4285f4;
-            --secondary-color: #34a853;
-            --dark-color: #202124;
-            --light-color: #f8f9fa;
-        }
-        
-        body {
-            font-family: 'Tajawal', sans-serif;
-            background-color: #f5f5f5;
-            color: #333;
-        }
-        
-        .navbar {
-            background-color: var(--dark-color);
-        }
-        
-        .navbar-brand, .nav-link {
-            color: white !important;
-        }
-        
-        .card {
-            border-radius: 10px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            margin-bottom: 20px;
-            border: none;
-        }
-        
-        .btn-primary {
-            background-color: var(--primary-color);
-            border-color: var(--primary-color);
-        }
-        
-        .chat-container {
-            height: 500px;
-            overflow-y: auto;
-            background-color: white;
-            border-radius: 10px;
-            padding: 15px;
-        }
-        
-        .message {
-            margin-bottom: 15px;
-            padding: 10px 15px;
-            border-radius: 10px;
-            max-width: 80%;
-        }
-        
-        .user-message {
-            background-color: var(--primary-color);
-            color: white;
-            margin-left: auto;
-        }
-        
-        .bot-message {
-            background-color: #e9ecef;
-            margin-right: auto;
-        }
-        
-        .avatar {
-            width: 100px;
-            height: 100px;
-            border-radius: 50%;
-            object-fit: cover;
-        }
-        
-        .file-icon {
-            font-size: 3rem;
-            color: var(--primary-color);
-        }
-    </style>
-</head>
-<body>
-    <nav class="navbar navbar-expand-lg navbar-dark">
-        <div class="container">
-            <a class="navbar-brand" href="/">OTH AI</a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav me-auto">
-                    <li class="nav-item">
-                        <a class="nav-link" href="/"><i class="fas fa-home"></i> الرئيسية</a>
-                    </li>
-                    {% if 'user_id' in session %}
-                    <li class="nav-item">
-                        <a class="nav-link" href="/dashboard"><i class="fas fa-tachometer-alt"></i> لوحة التحكم</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/chat"><i class="fas fa-comments"></i> الدردشة</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/files"><i class="fas fa-file-upload"></i> الملفات</a>
-                    </li>
-                    {% endif %}
-                </ul>
-                <ul class="navbar-nav">
-                    {% if 'user_id' in session %}
-                    <li class="nav-item dropdown">
-                        <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-bs-toggle="dropdown">
-                            <i class="fas fa-user-circle"></i> {{ session['username'] }}
-                        </a>
-                        <ul class="dropdown-menu">
-                            <li><a class="dropdown-item" href="/profile"><i class="fas fa-user"></i> الملف الشخصي</a></li>
-                            <li><hr class="dropdown-divider"></li>
-                            <li><a class="dropdown-item" href="/logout"><i class="fas fa-sign-out-alt"></i> تسجيل الخروج</a></li>
-                        </ul>
-                    </li>
-                    {% else %}
-                    <li class="nav-item">
-                        <a class="nav-link" href="/login"><i class="fas fa-sign-in-alt"></i> تسجيل الدخول</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="/register"><i class="fas fa-user-plus"></i> إنشاء حساب</a>
-                    </li>
-                    {% endif %}
-                </ul>
-            </div>
-        </div>
-    </nav>
-
-    <div class="container my-5">
-        {% with messages = get_flashed_messages(with_categories=true) %}
-            {% if messages %}
-                {% for category, message in messages %}
-                    <div class="alert alert-{{ category }} alert-dismissible fade show">
-                        {{ message }}
-                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                    </div>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
-        
-        {{ content | safe }}
-    </div>
-
-    <footer class="bg-dark text-white py-4 mt-5">
-        <div class="container text-center">
-            <p>جميع الحقوق محفوظة &copy; OTH AI 2023</p>
-        </div>
-    </footer>
-
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        // JavaScript for chat functionality
-        document.addEventListener('DOMContentLoaded', function() {
-            // Auto-scroll chat to bottom
-            const chatContainer = document.querySelector('.chat-container');
-            if (chatContainer) {
-                chatContainer.scrollTop = chatContainer.scrollHeight;
-                
-                // Handle chat form submission
-                const chatForm = document.getElementById('chat-form');
-                if (chatForm) {
-                    chatForm.addEventListener('submit', function(e) {
-                        e.preventDefault();
-                        const input = document.getElementById('message-input');
-                        const message = input.value.trim();
-                        
-                        if (message) {
-                            // Add user message to chat
-                            const userMessage = document.createElement('div');
-                            userMessage.className = 'message user-message';
-                            userMessage.innerHTML = `
-                                <div class="message-content">${message}</div>
-                                <div class="message-time">${new Date().toLocaleTimeString()}</div>
-                            `;
-                            chatContainer.appendChild(userMessage);
-                            
-                            // Clear input
-                            input.value = '';
-                            
-                            // Scroll to bottom
-                            chatContainer.scrollTop = chatContainer.scrollHeight;
-                            
-                            // Send to server
-                            fetch('/api/chat', {
-                                method: 'POST',
-                                headers: {
-                                    'Content-Type': 'application/json',
-                                },
-                                body: JSON.stringify({ message: message })
-                            })
-                            .then(response => response.json())
-                            .then(data => {
-                                if (data.error) {
-                                    throw new Error(data.error);
-                                }
-                                
-                                // Add bot response to chat
-                                const botMessage = document.createElement('div');
-                                botMessage.className = 'message bot-message';
-                                botMessage.innerHTML = `
-                                    <div class="message-content">${data.reply}</div>
-                                    <div class="message-time">${new Date().toLocaleTimeString()}</div>
-                                `;
-                                chatContainer.appendChild(botMessage);
-                                
-                                // Scroll to bottom
-                                chatContainer.scrollTop = chatContainer.scrollHeight;
-                            })
-                            .catch(error => {
-                                console.error('Error:', error);
-                            });
-                        }
-                    });
-                }
-            }
-        });
-    </script>
-</body>
-</html>
-"""
-
-HOME_CONTENT = """
-<div class="row">
-    <div class="col-md-8 mx-auto text-center">
-        <h1 class="display-4 mb-4">مرحبًا بك في OTH AI</h1>
-        <p class="lead">نظام الذكاء الاصطناعي المتقدم للدردشة وتحليل المحتوى</p>
-        
-        {% if 'user_id' not in session %}
-        <div class="d-grid gap-2 d-sm-flex justify-content-sm-center mt-4">
-            <a href="/login" class="btn btn-primary btn-lg px-4 gap-3">
-                <i class="fas fa-sign-in-alt"></i> تسجيل الدخول
-            </a>
-            <a href="/register" class="btn btn-outline-secondary btn-lg px-4">
-                <i class="fas fa-user-plus"></i> إنشاء حساب
-            </a>
-        </div>
-        {% else %}
-        <div class="d-grid gap-2 d-sm-flex justify-content-sm-center mt-4">
-            <a href="/chat" class="btn btn-primary btn-lg px-4 gap-3">
-                <i class="fas fa-comments"></i> بدء الدردشة
-            </a>
-            <a href="/dashboard" class="btn btn-outline-primary btn-lg px-4">
-                <i class="fas fa-tachometer-alt"></i> لوحة التحكم
-            </a>
-        </div>
-        {% endif %}
-    </div>
-</div>
-
-<div class="row mt-5">
-    <div class="col-md-4 mb-4">
-        <div class="card h-100">
-            <div class="card-body text-center">
-                <i class="fas fa-robot fa-3x mb-3 text-primary"></i>
-                <h3 class="card-title">ذكاء اصطناعي متقدم</h3>
-                <p class="card-text">نظام دردشة ذكي يستخدم أحدث تقنيات الذكاء الاصطناعي</p>
-            </div>
-        </div>
-    </div>
-    
-    <div class="col-md-4 mb-4">
-        <div class="card h-100">
-            <div class="card-body text-center">
-                <i class="fas fa-file-upload fa-3x mb-3 text-primary"></i>
-                <h3 class="card-title">تحليل الملفات</h3>
-                <p class="card-text">قم بتحميل الملفات واحصل على تحليل مفصل لمحتواها</p>
-            </div>
-        </div>
-    </div>
-    
-    <div class="col-md-4 mb-4">
-        <div class="card h-100">
-            <div class="card-body text-center">
-                <i class="fas fa-history fa-3x mb-3 text-primary"></i>
-                <h3 class="card-title">سجل المحادثات</h3>
-                <p class="card-text">احتفظ بسجل كامل لمحادثاتك للرجوع إليها لاحقًا</p>
-            </div>
-        </div>
-    </div>
-</div>
-"""
-
-LOGIN_CONTENT = """
-<div class="row justify-content-center">
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header bg-primary text-white">
-                <h3 class="mb-0">تسجيل الدخول</h3>
-            </div>
-            <div class="card-body">
-                <form method="POST" action="/login">
-                    <div class="mb-3">
-                        <label for="username" class="form-label">اسم المستخدم</label>
-                        <input type="text" class="form-control" id="username" name="username" required>
-                    </div>
-                    <div class="mb-3">
-                        <label for="password" class="form-label">كلمة المرور</label>
-                        <input type="password" class="form-control" id="password" name="password" required>
-                    </div>
-                    <button type="submit" class="btn btn-primary w-100">
-                        <i class="fas fa-sign-in-alt"></i> تسجيل الدخول
-                    </button>
-                </form>
-                <div class="mt-3 text-center">
-                    <p>ليس لديك حساب؟ <a href="/register">سجل الآن</a></p>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-"""
-
-REGISTER_CONTENT = """
-<div class="row justify-content-center">
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header bg-primary text-white">
-                <h3 class="mb-0">إنشاء حساب جديد</h3>
-            </div>
-            <div class="card-body">
-                <form method="POST" action="/register">
-                    <div class="mb-3">
-                        <label for="username" class="form-label">اسم المستخدم</label>
-                        <input type="text" class="form-control" id="username" name="username" required>
-                        <div class="form-text">4 أحرف على الأقل (أحرف إنجليزية، أرقام، _)</div>
-                    </div>
-                    <div class="mb-3">
-                        <label for="email" class="form-label">البريد الإلكتروني</label>
-                        <input type="email" class="form-control" id="email" name="email" required>
-                    </div>
-                    <div class="mb-3">
-                        <label for="password" class="form-label">كلمة المرور</label>
-                        <input type="password" class="form-control" id="password" name="password" required>
-                        <div class="form-text">6 أحرف على الأقل</div>
-                    </div>
-                    <div class="mb-3">
-                        <label for="confirm_password" class="form-label">تأكيد كلمة المرور</label>
-                        <input type="password" class="form-control" id="confirm_password" name="confirm_password" required>
-                    </div>
-                    <button type="submit" class="btn btn-primary w-100">
-                        <i class="fas fa-user-plus"></i> إنشاء حساب
-                    </button>
-                </form>
-                <div class="mt-3 text-center">
-                    <p>لديك حساب بالفعل؟ <a href="/login">سجل الدخول هنا</a></p>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-"""
-
-DASHBOARD_CONTENT = """
-<div class="row">
-    <div class="col-md-12">
-        <div class="card">
-            <div class="card-header bg-primary text-white">
-                <h3 class="mb-0">مرحبًا {username}</h3>
-            </div>
-            <div class="card-body">
-                <div class="row">
-                    <div class="col-md-4">
-                        <div class="card text-center">
-                            <div class="card-body">
-                                <h5><i class="fas fa-comment-dots"></i> عدد الرسائل</h5>
-                                <p class="display-6">{stats[messages]}</p>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="col-md-4">
-                        <div class="card text-center">
-                            <div class="card-body">
-                                <h5><i class="fas fa-calendar-check"></i> تاريخ الانضمام</h5>
-                                <p class="display-6">{stats[joined_date]}</p>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="col-md-4">
-                        <div class="card text-center">
-                            <div class="card-body">
-                                <h5><i class="fas fa-clock"></i> آخر نشاط</h5>
-                                <p class="display-6">{stats[last_active]}</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="row mt-4">
-                    <div class="col-md-6">
-                        <a href="/chat" class="btn btn-primary btn-lg w-100">
-                            <i class="fas fa-comments"></i> بدء محادثة جديدة
-                        </a>
-                    </div>
-                    <div class="col-md-6">
-                        <a href="/profile" class="btn btn-outline-primary btn-lg w-100">
-                            <i class="fas fa-user"></i> تعديل الملف الشخصي
-                        </a>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-"""
-
-PROFILE_CONTENT = """
-<div class="row justify-content-center">
-    <div class="col-md-8">
-        <div class="card">
-            <div class="card-header bg-primary text-white">
-                <h3 class="mb-0">الملف الشخصي</h3>
-            </div>
-            <div class="card-body">
-                <div class="row">
-                    <div class="col-md-4 text-center">
-                        <img src="{{ url_for('uploaded_file', filename=avatar) }}" class="avatar mb-3" alt="صورة الملف الشخصي">
-                        <form method="POST" action="/profile" enctype="multipart/form-data">
-                            <div class="mb-3">
-                                <input type="file" class="form-control" name="avatar" accept="image/*">
-                            </div>
-                    </div>
-                    <div class="col-md-8">
-                        <div class="mb-3">
-                            <label class="form-label">اسم المستخدم</label>
-                            <input type="text" class="form-control" value="{username}" readonly>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label">البريد الإلكتروني</label>
-                            <input type="text" class="form-control" value="{email}" readonly>
-                        </div>
-                        <div class="mb-3">
-                            <label for="bio" class="form-label">نبذة عنك</label>
-                            <textarea class="form-control" id="bio" name="bio" rows="3">{bio}</textarea>
-                        </div>
-                        <button type="submit" class="btn btn-primary">
-                            <i class="fas fa-save"></i> حفظ التغييرات
-                        </button>
-                        </form>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-"""
-
-CHAT_CONTENT = """
-<div class="card">
-    <div class="card-header bg-primary text-white">
-        <h3 class="mb-0">الدردشة مع الذكاء الاصطناعي</h3>
-    </div>
-    <div class="card-body">
-        <div class="chat-container" id="chat-box">
-            {% for msg in messages %}
-            <div class="message {% if msg.sender == 'user' %}user-message{% else %}bot-message{% endif %}">
-                <div class="message-content">{{ msg.message }}</div>
-                <div class="message-time">{{ format_timestamp(msg.timestamp) }}</div>
-            </div>
-            {% endfor %}
-        </div>
-        
-        <form id="chat-form" class="mt-3">
-            <div class="input-group">
-                <input type="text" id="message-input" class="form-control" placeholder="اكتب رسالتك هنا..." autocomplete="off">
-                <button class="btn btn-primary" type="submit">
-                    <i class="fas fa-paper-plane"></i> إرسال
-                </button>
-            </div>
-        </form>
-    </div>
-</div>
-"""
-
-FILES_CONTENT = """
-<div class="card">
-    <div class="card-header bg-primary text-white">
-        <h3 class="mb-0">إدارة الملفات</h3>
-    </div>
-    <div class="card-body">
-        <form method="POST" action="/files" enctype="multipart/form-data">
-            <div class="mb-3">
-                <label for="file" class="form-label">رفع ملف جديد</label>
-                <input class="form-control" type="file" id="file" name="file" required>
-                <div class="form-text">الملفات المسموحة: PNG, JPG, PDF, TXT, DOCX (بحد أقصى 10MB)</div>
-            </div>
-            <button type="submit" class="btn btn-primary">
-                <i class="fas fa-upload"></i> رفع الملف
-            </button>
-        </form>
-        
-        <hr>
-        
-        <h4 class="mt-4">ملفاتك</h4>
-        {% if files %}
-        <div class="row">
-            {% for file in files %}
-            <div class="col-md-3 mb-4">
-                <div class="card text-center">
-                    <div class="card-body">
-                        <i class="fas fa-file-alt file-icon"></i>
-                        <h5 class="card-title mt-2">{{ file.filename }}</h5>
-                        <p class="card-text text-muted">{{ (file.file_size / 1024 / 1024)|round(2) }} MB</p>
-                        <a href="{{ url_for('uploaded_file', filename=file.filename) }}" class="btn btn-sm btn-outline-primary">
-                            <i class="fas fa-download"></i> تحميل
-                        </a>
-                    </div>
-                </div>
-            </div>
-            {% endfor %}
-        </div>
-        {% else %}
-        <div class="alert alert-info">
-            لا توجد ملفات مرفوعة بعد
-        </div>
-        {% endif %}
-    </div>
-</div>
-"""
-
+# ===== تكوين Vercel =====
 # ===== تشغيل التطبيق =====
 if __name__ == '__main__':
-    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-    os.makedirs('data', exist_ok=True)
-    
-    # Start background cleanup thread
-    def cleanup_task():
-        while True:
-            time.sleep(3600)  # Run hourly
-            cleaned = db.cleanup_old_conversations()
-            logger.info(f"تم تنظيف {cleaned} محادثة قديمة")
-    
-    import threading
-    cleanup_thread = threading.Thread(target=cleanup_task)
-    cleanup_thread.daemon = True
-    cleanup_thread.start()
-    
-    app.run(threaded=True)
+    app.run(debug=True)
