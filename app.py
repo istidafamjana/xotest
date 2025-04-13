@@ -1,133 +1,42 @@
-import os
-import uuid
-import hashlib
+from flask import Flask, request, jsonify, render_template, redirect, url_for, session, flash
+from werkzeug.security import generate_password_hash, check_password_hash
+import requests
+import google.generativeai as genai
 import logging
 import tempfile
 import urllib.request
-import requests
-import google.generativeai as genai
+import os
+import hashlib
+import time
+import uuid
 from datetime import datetime, timedelta
 from threading import Lock
 from functools import wraps
-from flask import Flask, request, jsonify, render_template, redirect, url_for, session, flash, send_from_directory
-from werkzeug.security import generate_password_hash, check_password_hash
-from werkzeug.utils import secure_filename
-import pytz
-import pdfplumber
-import docx
-from PIL import Image
-import arabic_reshaper
-from bidi.algorithm import get_display
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
 
 app = Flask(__name__)
-app.secret_key = "oth-ai-super-secret-key-" + str(uuid.uuid4())
-app.config.update(
-    UPLOAD_FOLDER='static/uploads',
-    ALLOWED_EXTENSIONS={'png', 'jpg', 'jpeg', 'gif', 'pdf', 'docx', 'txt'},
-    MAX_CONTENT_LENGTH=16 * 1024 * 1024,
-    PERMANENT_SESSION_LIFETIME=timedelta(hours=5),
-    TIMEZONE='Asia/Riyadh',
-    TEMPLATES_AUTO_RELOAD=True,
-    SESSION_COOKIE_SECURE=True,
-    SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE='Lax'
-)
+app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key')
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=5)
 
+# تكوين السجلات
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger('oth-ai')
-limiter = Limiter(app=app, key_func=get_remote_address, default_limits=["200 per day", "50 per hour"])
+logger = logging.getLogger(__name__)
 
-class UserManager:
-    def __init__(self):
-        self.users = {}
-        self.conversations = {}
-        self.files = {}
-        self._lock = Lock()
-        self.create_default_admin()
+# التوكنات والمفاتيح
+PAGE_ACCESS_TOKEN = "EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD"
+VERIFY_TOKEN = "d51ee4e3183dbbd9a27b7d2c1af8c655"
+GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"
 
-    def create_default_admin(self):
-        admin_id = str(uuid.uuid4())
-        self.users["admin"] = {
-            'id': admin_id,
-            'username': 'admin',
-            'password': generate_password_hash('admin123'),
-            'email': 'admin@oth.ai',
-            'role': 'admin',
-            'created_at': self.current_time,
-            'last_login': None,
-            'settings': {'theme': 'dark', 'language': 'ar'}
-        }
-        self.conversations[admin_id] = {
-            'history': [],
-            'created_at': self.current_time,
-            'updated_at': self.current_time,
-            'title': 'محادثة جديدة'
-        }
-
-    @property
-    def current_time(self):
-        return datetime.now(pytz.timezone(app.config['TIMEZONE']))
-
-    def add_user(self, username, password, email):
-        with self._lock:
-            if username in self.users:
-                return False
-            user_id = str(uuid.uuid4())
-            self.users[username] = {
-                'id': user_id,
-                'username': username,
-                'password': generate_password_hash(password),
-                'email': email,
-                'role': 'user',
-                'created_at': self.current_time,
-                'last_login': None,
-                'settings': {'theme': 'light', 'language': 'ar'}
-            }
-            self.conversations[user_id] = {
-                'history': [],
-                'created_at': self.current_time,
-                'updated_at': self.current_time,
-                'title': 'محادثة جديدة'
-            }
-            return True
-
-    def verify_user(self, username, password):
-        user = self.users.get(username)
-        if user and check_password_hash(user['password'], password):
-            user['last_login'] = self.current_time
-            return user
-        return None
-
-    def get_conversation(self, user_id):
-        return self.conversations.get(user_id)
-
-    def add_message(self, user_id, message, sender='user'):
-        with self._lock:
-            if user_id not in self.conversations:
-                self.conversations[user_id] = {
-                    'history': [],
-                    'created_at': self.current_time,
-                    'updated_at': self.current_time,
-                    'title': message[:30] + ('...' if len(message) > 30 else '')
-                }
-            self.conversations[user_id]['history'].append({
-                'id': str(uuid.uuid4()),
-                'content': message,
-                'timestamp': self.current_time,
-                'sender': sender
-            })
-            self.conversations[user_id]['updated_at'] = self.current_time
-
-    def get_user_conversations(self, user_id):
-        return {user_id: self.conversations.get(user_id, {'history': []})}
-
-db = UserManager()
-
-genai.configure(api_key="AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU")
+# تهيئة نموذج Gemini
+genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
+# تخزين المحادثات المؤقتة
+conversations = {}
+users = {}  # تخزين مؤقت للمستخدمين
+CONVERSATION_TIMEOUT = 5 * 60 * 60  # 5 ساعات بالثواني
+data_lock = Lock()
+
+# ديكورات المسارات
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -137,192 +46,346 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
-def admin_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        user = db.users.get(session.get('username'))
-        if not user or user.get('role') != 'admin':
-            flash('غير مصرح بالوصول', 'danger')
-            return redirect(url_for('home'))
-        return f(*args, **kwargs)
-    return decorated_function
+# وظائف مساعدة
+def get_user_id(sender_id):
+    return hashlib.md5(sender_id.encode()).hexdigest()
 
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
-
-def process_uploaded_file(file):
+def setup_messenger_profile():
+    url = f"https://graph.facebook.com/v17.0/me/messenger_profile?access_token={PAGE_ACCESS_TOKEN}"
+    payload = {
+        "get_started": {"payload": "GET_STARTED"},
+        "persistent_menu": [
+            {
+                "locale": "default",
+                "composer_input_disabled": False,
+                "call_to_actions": [
+                    {
+                        "type": "web_url",
+                        "title": "🌐 الانتقال للويب",
+                        "url": "https://your-app.vercel.app/chat",
+                        "webview_height_ratio": "full",
+                        "messenger_extensions": True
+                    },
+                    {
+                        "type": "postback",
+                        "title": "🆘 المساعدة",
+                        "payload": "HELP_CMD"
+                    }
+                ]
+            }
+        ],
+        "whitelisted_domains": ["https://your-app.vercel.app"],
+        "greeting": [
+            {
+                "locale": "default",
+                "text": "مرحبًا بك في بوت OTH IA! 💎"
+            }
+        ]
+    }
     try:
-        filename = secure_filename(file.filename)
-        file_ext = filename.rsplit('.', 1)[1].lower()
-        file_id = str(uuid.uuid4())
-        new_filename = f"{file_id}.{file_ext}"
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], new_filename)
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        file.save(filepath)
-        
-        if file_ext in ['png', 'jpg', 'jpeg', 'gif']:
-            return {'type': 'image', 'path': filepath, 'original_name': filename}
-        elif file_ext == 'pdf':
-            text = ""
-            with pdfplumber.open(filepath) as pdf:
-                for page in pdf.pages:
-                    text += page.extract_text() or ""
-            return {'type': 'pdf', 'path': filepath, 'original_name': filename, 'content': text[:500]}
-        elif file_ext == 'docx':
-            doc = docx.Document(filepath)
-            text = "\n".join([para.text for para in doc.paragraphs])
-            return {'type': 'docx', 'path': filepath, 'original_name': filename, 'content': text[:500]}
-        else:
-            return {'type': 'file', 'path': filepath, 'original_name': filename}
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+        logger.info("تم إعداد واجهة الماسنجر بنجاح")
     except Exception as e:
-        logger.error(f"File processing error: {str(e)}")
+        logger.error(f"خطأ في إعداد الواجهة: {str(e)}")
+
+def download_image(url):
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        req = urllib.request.Request(url, headers=headers)
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp_file:
+            with urllib.request.urlopen(req) as response:
+                tmp_file.write(response.read())
+            return tmp_file.name
+    except Exception as e:
+        logger.error(f"خطأ في تحميل الصورة: {str(e)}")
         return None
 
-def generate_ai_response(prompt, context=None):
+def analyze_image(image_path, context=None):
     try:
-        full_prompt = f"{context}\n\n{prompt}" if context else prompt
-        response = model.generate_content(full_prompt)
+        img = genai.upload_file(image_path)
+        prompt = "حلل هذه الصورة بدقة وقدم وصفاً شاملاً:"
+        if context:
+            prompt = f"سياق المحادثة:\n{context}\n{prompt}"
+        response = model.generate_content([prompt, img])
         return response.text
     except Exception as e:
-        logger.error(f"AI generation error: {str(e)}")
-        return "عذرًا، حدث خطأ أثناء معالجة طلبك. يرجى المحاولة لاحقًا."
+        logger.error(f"خطأ في تحليل الصورة: {str(e)}")
+        return None
+    finally:
+        if image_path and os.path.exists(image_path):
+            os.unlink(image_path)
 
+def send_message(recipient_id, message_text, buttons=None):
+    url = f"https://graph.facebook.com/v17.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
+    payload = {
+        "recipient": {"id": recipient_id},
+        "message": {"text": message_text} if not buttons else {
+            "attachment": {
+                "type": "template",
+                "payload": {
+                    "template_type": "button",
+                    "text": message_text,
+                    "buttons": buttons
+                }
+            }
+        },
+        "messaging_type": "RESPONSE"
+    }
+    try:
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+        return True
+    except Exception as e:
+        logger.error(f"خطأ في إرسال الرسالة: {str(e)}")
+        return False
+
+def cleanup_old_conversations():
+    current_time = time.time()
+    with data_lock:
+        for user_id in list(conversations.keys()):
+            if current_time - conversations[user_id]["last_active"] > CONVERSATION_TIMEOUT:
+                del conversations[user_id]
+                logger.info(f"تم حذف محادثة المستخدم {user_id} لانتهاء المهلة")
+
+# مسارات الموقع
 @app.route('/')
 def home():
     return render_template('index.html')
 
 @app.route('/login', methods=['GET', 'POST'])
-@limiter.limit("10 per minute")
 def login():
     if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        user = db.verify_user(username, password)
-        if user:
-            session['user_id'] = user['id']
-            session['username'] = username
-            session.permanent = True
-            flash('تم تسجيل الدخول بنجاح!', 'success')
-            return redirect(url_for('dashboard'))
-        flash('اسم المستخدم أو كلمة المرور غير صحيحة', 'danger')
+        username = request.form['username']
+        password = request.form['password']
+        
+        with data_lock:
+            user = users.get(username)
+            if user and check_password_hash(user['password'], password):
+                session['user_id'] = user['id']
+                session['username'] = username
+                session['session_id'] = str(uuid.uuid4())
+                session.permanent = True
+                
+                # إنشاء محادثة جديدة للمستخدم إذا لم تكن موجودة
+                if user['id'] not in conversations:
+                    conversations[user['id']] = {
+                        "history": ["بدأ المستخدم محادثة جديدة"],
+                        "last_active": time.time()
+                    }
+                
+                flash('تم تسجيل الدخول بنجاح!', 'success')
+                next_page = request.args.get('next')
+                return redirect(next_page or url_for('chat'))
+            else:
+                flash('اسم المستخدم أو كلمة المرور غير صحيحة', 'danger')
+    
     return render_template('login.html')
 
 @app.route('/register', methods=['GET', 'POST'])
-@limiter.limit("5 per hour")
 def register():
     if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        email = request.form.get('email')
+        username = request.form['username']
+        password = request.form['password']
         
         if len(username) < 4 or len(password) < 6:
             flash('اسم المستخدم يجب أن يكون 4 أحرف على الأقل وكلمة المرور 6 أحرف', 'danger')
-        elif db.add_user(username, password, email):
-            flash('تم إنشاء الحساب بنجاح! يمكنك تسجيل الدخول الآن', 'success')
-            return redirect(url_for('login'))
-        else:
-            flash('اسم المستخدم موجود بالفعل', 'danger')
+            return redirect(url_for('register'))
+        
+        with data_lock:
+            if username in users:
+                flash('اسم المستخدم موجود بالفعل', 'danger')
+            else:
+                user_id = str(uuid.uuid4())
+                users[username] = {
+                    'id': user_id,
+                    'username': username,
+                    'password': generate_password_hash(password),
+                    'created_at': time.time()
+                }
+                
+                # إنشاء محادثة جديدة للمستخدم
+                conversations[user_id] = {
+                    "history": ["بدأ المستخدم محادثة جديدة"],
+                    "last_active": time.time()
+                }
+                
+                flash('تم إنشاء الحساب بنجاح! يمكنك تسجيل الدخول الآن', 'success')
+                return redirect(url_for('login'))
+    
     return render_template('register.html')
 
 @app.route('/logout')
 @login_required
 def logout():
+    user_id = session.get('user_id')
+    with data_lock:
+        if user_id in conversations:
+            del conversations[user_id]
+    
     session.clear()
     flash('تم تسجيل الخروج بنجاح', 'info')
     return redirect(url_for('home'))
 
-@app.route('/dashboard')
-@login_required
-def dashboard():
-    user = db.users.get(session.get('username'))
-    conversations = db.get_user_conversations(session['user_id'])
-    return render_template('dashboard.html', user=user, conversations=conversations)
-
-@app.route('/chat', methods=['GET', 'POST'])
+@app.route('/chat')
 @login_required
 def chat():
-    user_id = session['user_id']
-    conversation = db.get_conversation(user_id)
-    
-    if request.method == 'POST':
-        message = request.form.get('message', '').strip()
-        file = request.files.get('file')
-        
-        if not message and not file:
-            flash('الرجاء إدخال رسالة أو تحميل ملف', 'warning')
-        else:
-            if file and allowed_file(file.filename):
-                file_info = process_uploaded_file(file)
-                if file_info:
-                    db.add_message(user_id, f"ملف مرفق: {file_info['original_name']}")
-            
-            if message:
-                db.add_message(user_id, message)
-                response = generate_ai_response(message)
-                db.add_message(user_id, response, 'bot')
-        
-        return redirect(url_for('chat'))
-    
-    return render_template('chat.html', conversation=conversation)
+    return render_template('chat.html')
 
 @app.route('/api/chat', methods=['POST'])
 @login_required
-@limiter.limit("60 per minute")
 def api_chat():
-    user_id = session['user_id']
+    if 'user_id' not in session:
+        return jsonify({"error": "غير مصرح به"}), 401
+    
+    try:
+        data = request.json
+        user_message = data.get('message', '').strip()
+        
+        if not user_message:
+            return jsonify({"reply": "الرجاء إدخال رسالة صالحة"}), 400
+        
+        user_id = session['user_id']
+        
+        with data_lock:
+            if user_id not in conversations:
+                conversations[user_id] = {
+                    "history": ["بدأ المستخدم محادثة جديدة"],
+                    "last_active": time.time()
+                }
+            
+            # تحديث وقت النشاط
+            conversations[user_id]["last_active"] = time.time()
+            
+            # إضافة رسالة المستخدم
+            conversations[user_id]["history"].append(f"المستخدم: {user_message}")
+            
+            # الحصول على سياق المحادثة
+            context = "\n".join(conversations[user_id]["history"][-5:])
+            
+            # توليد الرد
+            prompt = f"{context}\n\nالسؤال: {user_message}" if context else user_message
+            response = model.generate_content(prompt)
+            reply = response.text
+            
+            # إضافة رد البوت
+            conversations[user_id]["history"].append(f"البوت: {reply}")
+            
+            return jsonify({"reply": reply}), 200
+            
+    except Exception as e:
+        logger.error(f"API Error: {str(e)}")
+        return jsonify({"reply": "حدث خطأ أثناء معالجة طلبك"}), 500
+
+# مسارات البوت
+@app.route('/webhook', methods=['GET', 'POST'])
+def webhook():
+    if request.method == 'GET':
+        verify_token = request.args.get('hub.verify_token')
+        if verify_token == VERIFY_TOKEN:
+            setup_messenger_profile()
+            return request.args.get('hub.challenge')
+        return "Verification failed", 403
+    
     data = request.get_json()
+    try:
+        for entry in data.get('entry', []):
+            for event in entry.get('messaging', []):
+                sender_id = event['sender']['id']
+                user_id = get_user_id(sender_id)
+                current_time = time.time()
+                
+                # تنظيف المحادثات القديمة
+                cleanup_old_conversations()
+                
+                # معالجة Postback (أزرار القائمة)
+                if 'postback' in event:
+                    handle_command(sender_id, user_id, event['postback']['payload'])
+                    continue
+                    
+                # معالجة الرسائل
+                if 'message' in event:
+                    message = event['message']
+                    
+                    with data_lock:
+                        if user_id not in conversations:
+                            conversations[user_id] = {
+                                "history": ["بدأ المستخدم محادثة جديدة"],
+                                "last_active": current_time
+                            }
+                            send_message(sender_id, "مرحباً بك في بوت OTH IA! 💎\n\nيمكنك إرسال أي سؤال أو صورة وسأساعدك.")
+                        
+                        # تحديث وقت النشاط
+                        conversations[user_id]["last_active"] = current_time
+                        
+                        # معالجة الصور
+                        if 'attachments' in message:
+                            for attachment in message['attachments']:
+                                if attachment['type'] == 'image':
+                                    send_message(sender_id, "⏳ جاري تحليل الصورة...")
+                                    image_url = attachment['payload']['url']
+                                    image_path = download_image(image_url)
+                                    
+                                    if image_path:
+                                        context = "\n".join(conversations[user_id]["history"][-5:])
+                                        analysis = analyze_image(image_path, context)
+                                        
+                                        if analysis:
+                                            conversations[user_id]["history"].append(f"صورة: {analysis[:200]}...")
+                                            send_message(sender_id, f"📸 تحليل الصورة:\n\n{analysis}")
+                                        else:
+                                            send_message(sender_id, "⚠️ تعذر تحليل الصورة")
+                            continue
+                        
+                        # معالجة النصوص
+                        if 'text' in message:
+                            user_message = message['text'].strip()
+                            
+                            if user_message.lower() in ['مساعدة', 'help']:
+                                send_message(sender_id, "🆘 مركز المساعدة:\n\n• اكتب سؤالك مباشرة\n• أرسل صورة لتحليلها\n• /new لبدء محادثة جديدة")
+                            else:
+                                try:
+                                    context = "\n".join(conversations[user_id]["history"][-5:])
+                                    prompt = f"{context}\n\nالسؤال: {user_message}" if context else user_message
+                                    
+                                    response = model.generate_content(prompt)
+                                    reply = response.text
+                                    
+                                    conversations[user_id]["history"].append(f"المستخدم: {user_message}")
+                                    conversations[user_id]["history"].append(f"البوت: {reply}")
+                                    
+                                    send_message(sender_id, reply)
+                                except Exception as e:
+                                    logger.error(f"AI Error: {str(e)}")
+                                    send_message(sender_id, "⚠️ حدث خطأ أثناء المعالجة، يرجى المحاولة لاحقاً")
     
-    if not data or 'message' not in data:
-        return jsonify({'error': 'طلب غير صالح'}), 400
+    except Exception as e:
+        logger.error(f"Webhook error: {str(e)}")
     
-    message = data['message'].strip()
-    if not message:
-        return jsonify({'error': 'الرسالة لا يمكن أن تكون فارغة'}), 400
-    
-    db.add_message(user_id, message)
-    response = generate_ai_response(message)
-    db.add_message(user_id, response, 'bot')
-    
-    return jsonify({'reply': response}), 200
+    return jsonify({"status": "ok"}), 200
 
-@app.route('/settings', methods=['GET', 'POST'])
-@login_required
-def settings():
-    user = db.users.get(session.get('username'))
-    
-    if request.method == 'POST':
-        theme = request.form.get('theme')
-        language = request.form.get('language')
-        email = request.form.get('email')
-        
-        user['settings']['theme'] = theme
-        user['settings']['language'] = language
-        user['email'] = email
-        
-        flash('تم تحديث الإعدادات بنجاح', 'success')
-        return redirect(url_for('settings'))
-    
-    return render_template('settings.html', user=user)
-
-@app.route('/uploads/<filename>')
-@login_required
-def uploaded_file(filename):
-    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
-
-@app.route('/admin')
-@admin_required
-def admin_panel():
-    users = db.users
-    return render_template('admin.html', users=users)
+def handle_command(sender_id, user_id, command):
+    if command == "GET_STARTED":
+        send_message(sender_id, "مرحباً بك في OTH IA! 💎\n\nيمكنك إرسال أي سؤال أو صورة وسأساعدك.")
+    elif command == "HELP_CMD":
+        send_message(sender_id, "🆘 مركز المساعدة:\n\n• اكتب سؤالك مباشرة\n• أرسل صورة لتحليلها\n• /new لبدء محادثة جديدة")
 
 @app.errorhandler(404)
 def page_not_found(e):
     return render_template('404.html'), 404
 
-@app.errorhandler(500)
-def internal_error(e):
-    return render_template('500.html'), 500
+# تشغيل التنظيف الدوري كل ساعة
+def periodic_cleanup():
+    while True:
+        time.sleep(3600)  # كل ساعة
+        cleanup_old_conversations()
+
+# بدء التنظيف الدوري في خيط منفصل
+import threading
+cleanup_thread = threading.Thread(target=periodic_cleanup)
+cleanup_thread.daemon = True
+cleanup_thread.start()
 
 if __name__ == '__main__':
-    os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+    setup_messenger_profile()
     app.run(threaded=True)
