@@ -20,50 +20,51 @@ from PIL import Image
 import io
 import base64
 
-# تهيئة التطبيق
-app = Flask(__name__)
+# Initialize Flask app
+app = Flask(__name__, template_folder='templates', static_folder='static')
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-oth-ia-advanced-v2')
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=24)
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB
-app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif', 'pdf', 'txt', 'mp3', 'mp4'}
+app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'gif', 'pdf', 'txt'}
 
-# إنشاء مجلد التحميلات إذا لم يكن موجودًا
+# Create necessary directories
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+os.makedirs('templates/auth', exist_ok=True)
+os.makedirs('templates/admin', exist_ok=True)
+os.makedirs('templates/errors', exist_ok=True)
+os.makedirs('static/css', exist_ok=True)
+os.makedirs('static/js', exist_ok=True)
+os.makedirs('static/images', exist_ok=True)
 
-# تكوين السجلات
+# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('OTH_IA_V2')
 
-# التوكنات والمفاتيح
-PAGE_ACCESS_TOKEN = "EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD"
-VERIFY_TOKEN = "d51ee4e3183dbbd9a27b7d2c1af8c655"
-GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"
-RECAPTCHA_SITE_KEY = os.environ.get('RECAPTCHA_SITE_KEY', 'your-recaptcha-key')
-RECAPTCHA_SECRET_KEY = os.environ.get('RECAPTCHA_SECRET_KEY', 'your-recaptcha-secret')
+# Configuration
+PAGE_ACCESS_TOKEN = os.environ.get('PAGE_ACCESS_TOKEN', 'EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD')
+VERIFY_TOKEN = os.environ.get('VERIFY_TOKEN', 'd51ee4e3183dbbd9a27b7d2c1af8c655')
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', 'AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU')
 
-# تهيئة نموذج Gemini
+# Initialize Gemini AI
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-1.5-pro')
 
-# تخزين المحادثات والمستخدمين والإعدادات
+# Data storage
 conversations = {}
 users = {}
 user_settings = {}
 notifications = {}
-CONVERSATION_TIMEOUT = 24 * 60 * 60  # 24 ساعة بالثواني
+CONVERSATION_TIMEOUT = 24 * 60 * 60  # 24 hours in seconds
 data_lock = Lock()
 
-# ==============================================
-# وظائف المساعدة والديكورات
-# ==============================================
-
+# Helper functions
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if 'user_id' not in session:
-            flash('يجب تسجيل الدخول أولاً', 'danger')
+            flash('Please login first', 'danger')
             return redirect(url_for('login', next=request.url))
         return f(*args, **kwargs)
     return decorated_function
@@ -72,39 +73,32 @@ def admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if 'user_id' not in session or not users.get(session['username'], {}).get('is_admin', False):
-            flash('الوصول مرفوع. هذه الصفحة للإدارة فقط', 'danger')
+            flash('Access denied. Admin only', 'danger')
             return redirect(url_for('home'))
         return f(*args, **kwargs)
     return decorated_function
-
-def get_user_id(sender_id):
-    return hashlib.sha256(sender_id.encode()).hexdigest()
 
 def allowed_file(filename):
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
 def format_response(text):
-    # تحسين تنسيق النصوص البرمجية
     if "```" in text:
         parts = text.split("```")
         formatted = []
         for i, part in enumerate(parts):
             if i % 2 == 1:
-                # تحديد لغة البرمجة إذا كانت محددة
                 lang = part.split('\n')[0].strip() if '\n' in part else ''
                 code_content = part[len(lang):] if lang else part
-                formatted.append(f'<div class="code-block"><pre><code class="{lang}">{code_content}</code></pre><button class="copy-btn" onclick="copyCode(this)">نسخ الكود</button></div>')
+                formatted.append(f'<div class="code-block"><pre><code class="{lang}">{code_content}</code></pre><button class="copy-btn" onclick="copyCode(this)">Copy Code</button></div>')
             else:
                 formatted.append(part.replace("\n", "<br>"))
         return "".join(formatted)
     return text.replace("\n", "<br>")
 
 def generate_avatar(name):
-    # إنشاء صورة رمزية بسيطة بناء على اسم المستخدم
     colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8']
     color = colors[hash(name) % len(colors)]
-    
     initials = ''.join([part[0].upper() for part in name.split()[:2]])
     if len(initials) < 2:
         initials = name[:2].upper()
@@ -117,19 +111,6 @@ def generate_avatar(name):
     '''
     return f"data:image/svg+xml;base64,{base64.b64encode(svg.encode()).decode()}"
 
-def verify_recaptcha(response_token):
-    try:
-        data = {
-            'secret': RECAPTCHA_SECRET_KEY,
-            'response': response_token
-        }
-        response = requests.post('https://www.google.com/recaptcha/api/siteverify', data=data)
-        result = response.json()
-        return result.get('success', False)
-    except Exception as e:
-        logger.error(f"خطأ في التحقق من reCAPTCHA: {str(e)}")
-        return False
-
 def setup_messenger_profile():
     url = f"https://graph.facebook.com/v17.0/me/messenger_profile?access_token={PAGE_ACCESS_TOKEN}"
     payload = {
@@ -141,24 +122,24 @@ def setup_messenger_profile():
                 "call_to_actions": [
                     {
                         "type": "web_url",
-                        "title": "🌐 الانتقال للويب",
+                        "title": "🌐 Open Web",
                         "url": "https://your-app.vercel.app/chat",
                         "webview_height_ratio": "full",
                         "messenger_extensions": True
                     },
                     {
                         "type": "postback",
-                        "title": "🆘 المساعدة",
+                        "title": "🆘 Help",
                         "payload": "HELP_CMD"
                     },
                     {
                         "type": "postback",
-                        "title": "⚙️ الإعدادات",
+                        "title": "⚙️ Settings",
                         "payload": "SETTINGS_CMD"
                     },
                     {
                         "type": "postback",
-                        "title": "🚪 تسجيل الخروج",
+                        "title": "🚪 Logout",
                         "payload": "LOGOUT_CMD"
                     }
                 ]
@@ -168,29 +149,28 @@ def setup_messenger_profile():
         "greeting": [
             {
                 "locale": "default",
-                "text": "مرحبًا بك في بوت OTH IA! 💎\n\nيمكنك إرسال أي سؤال، صورة، ملف وسأساعدك في تحليلها وفهمها."
+                "text": "Welcome to OTH IA! 💎\n\nI can help with any questions, analyze images and files."
             }
         ]
     }
     try:
         response = requests.post(url, json=payload)
         response.raise_for_status()
-        logger.info("تم إعداد واجهة الماسنجر بنجاح")
+        logger.info("Messenger profile setup successfully")
     except Exception as e:
-        logger.error(f"خطأ في إعداد واجهة الماسنجر: {str(e)}")
+        logger.error(f"Error setting up messenger profile: {str(e)}")
 
 def download_file(url):
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (OTH IA File Downloader)'}
         req = urllib.request.Request(url, headers=headers)
         
-        # الحصول على معلومات الملف
         with urllib.request.urlopen(req) as response:
             content_type = response.headers.get('Content-Type', '')
             file_size = int(response.headers.get('Content-Length', 0))
             
             if file_size > app.config['MAX_CONTENT_LENGTH']:
-                raise ValueError("حجم الملف يتجاوز الحد المسموح")
+                raise ValueError("File size exceeds limit")
                 
             ext = mimetypes.guess_extension(content_type.split(';')[0]) or '.bin'
             filename = f"{uuid.uuid4()}{ext}"
@@ -201,41 +181,41 @@ def download_file(url):
                 
             return filepath, content_type
     except Exception as e:
-        logger.error(f"خطأ في تحميل الملف: {str(e)}")
+        logger.error(f"Error downloading file: {str(e)}")
         return None, None
 
 def analyze_file(filepath, content_type, context=None):
     try:
         if content_type.startswith('image/'):
             img = genai.upload_file(filepath)
-            prompt = "حلل هذه الصورة بدقة وقدم وصفاً شاملاً مع تمييز الأجزاء المهمة:"
+            prompt = "Analyze this image in detail and provide a comprehensive description:"
             if context:
-                prompt = f"سياق المحادثة:\n{context}\n{prompt}"
+                prompt = f"Conversation context:\n{context}\n{prompt}"
             response = model.generate_content([prompt, img])
             return format_response(response.text)
         
         elif content_type == 'application/pdf':
             file = genai.upload_file(filepath)
-            prompt = "حلل هذا الملف PDF وقدم ملخصاً محتوياته مع النقاط الرئيسية:"
+            prompt = "Analyze this PDF file and summarize its contents:"
             if context:
-                prompt = f"سياق المحادثة:\n{context}\n{prompt}"
+                prompt = f"Conversation context:\n{context}\n{prompt}"
             response = model.generate_content([prompt, file])
             return format_response(response.text)
         
         elif content_type.startswith('text/'):
             with open(filepath, 'r', encoding='utf-8') as f:
                 content = f.read()
-            prompt = "حلل هذا الملف النصي وقدم ملخصاً لمحتواه:"
+            prompt = "Analyze this text file and summarize its content:"
             if context:
-                prompt = f"سياق المحادثة:\n{context}\n{prompt}"
+                prompt = f"Conversation context:\n{context}\n{prompt}"
             response = model.generate_content([prompt, content])
             return format_response(response.text)
         
         else:
-            return "⚠️ نوع الملف غير مدعوم للتحليل المباشر. يمكنك إرسال سؤال محدد عنه."
+            return "⚠️ File type not supported for direct analysis."
             
     except Exception as e:
-        logger.error(f"خطأ في تحليل الملف: {str(e)}")
+        logger.error(f"Error analyzing file: {str(e)}")
         return None
     finally:
         if filepath and os.path.exists(filepath):
@@ -273,49 +253,48 @@ def send_message(recipient_id, message_text, buttons=None, quick_replies=None):
         response.raise_for_status()
         return True
     except Exception as e:
-        logger.error(f"خطأ في إرسال الرسالة: {str(e)}")
+        logger.error(f"Error sending message: {str(e)}")
         return False
 
 def handle_command(sender_id, user_id, command):
     if command == "GET_STARTED":
         welcome_msg = """
-        مرحباً بك في OTH IA! 💎
+        Welcome to OTH IA! 💎
 
-        أنا مساعدك الذكي الذي يمكنه:
-        - الإجابة على أسئلتك بذكاء
-        - تحليل الصور والملفات
-        - مساعدتك في البرمجة والتحليل
-        - شرح المفاهيم المعقدة ببساطة
+        I can help with:
+        - Answering questions intelligently
+        - Analyzing images and files
+        - Assisting with programming
+        - Explaining complex concepts
 
-        يمكنك البدء بإرسال سؤالك أو صورة الآن!
+        Send your question or image now!
         """
         send_message(sender_id, welcome_msg, quick_replies=[
-            {"content_type": "text", "title": "🆘 المساعدة", "payload": "HELP_CMD"},
-            {"content_type": "text", "title": "📷 تحليل صورة", "payload": "UPLOAD_IMAGE"},
-            {"content_type": "text", "title": "💬 محادثة جديدة", "payload": "NEW_CHAT"}
+            {"content_type": "text", "title": "🆘 Help", "payload": "HELP_CMD"},
+            {"content_type": "text", "title": "📷 Analyze Image", "payload": "UPLOAD_IMAGE"},
+            {"content_type": "text", "title": "💬 New Chat", "payload": "NEW_CHAT"}
         ])
         
     elif command == "HELP_CMD":
         help_msg = """
-        🆘 مركز المساعدة:
+        🆘 Help Center:
 
-        • اكتب سؤالك مباشرة لأحصل على إجابة ذكية
-        • أرسل صورة لتحليل محتواها
-        • أرسل ملف PDF أو نصي لتحليله
-        • استخدم الأوامر التالية:
+        • Ask any question
+        • Send images/files for analysis
+        • Use these commands:
         
-        /new - بدء محادثة جديدة
-        /help - عرض هذه المساعدة
-        /settings - عرض الإعدادات
+        /new - Start new chat
+        /help - Show this help
+        /settings - Show settings
         """
         send_message(sender_id, help_msg)
         
     elif command == "SETTINGS_CMD":
-        settings_msg = "⚙️ إعدادات المحادثة:\n\nيمكنك تعديل إعداداتك من خلال الموقع الإلكتروني"
+        settings_msg = "⚙️ Chat Settings:\n\nAdjust your settings on our website"
         send_message(sender_id, settings_msg, buttons=[
             {
                 "type": "web_url",
-                "title": "فتح الإعدادات",
+                "title": "Open Settings",
                 "url": "https://your-app.vercel.app/settings",
                 "webview_height_ratio": "full",
                 "messenger_extensions": True
@@ -326,7 +305,7 @@ def handle_command(sender_id, user_id, command):
         with data_lock:
             if user_id in conversations:
                 del conversations[user_id]
-        send_message(sender_id, "تم تسجيل الخروج بنجاح. يمكنك العودة في أي وقت!")
+        send_message(sender_id, "Logged out successfully. Come back anytime!")
 
 def cleanup_old_conversations():
     current_time = time.time()
@@ -334,7 +313,7 @@ def cleanup_old_conversations():
         for user_id in list(conversations.keys()):
             if current_time - conversations[user_id]["last_active"] > CONVERSATION_TIMEOUT:
                 del conversations[user_id]
-                logger.info(f"تم حذف محادثة المستخدم {user_id} لانتهاء المهلة")
+                logger.info(f"Cleaned up conversation for user {user_id}")
 
 def add_notification(user_id, message, notification_type="info"):
     with data_lock:
@@ -355,25 +334,22 @@ def mark_notifications_read(user_id):
             for note in notifications[user_id]:
                 note['read'] = True
 
-# ==============================================
-# مسارات الويب
-# ==============================================
-
+# Routes
 @app.route('/')
 def home():
     if 'user_id' in session:
         return redirect(url_for('dashboard'))
     
-    return render_template('home.html', 
-                         recaptcha_site_key=RECAPTCHA_SITE_KEY,
-                         features=[
-                             {"icon": "fa-robot", "title": "ذكاء اصطناعي متقدم", "desc": "محادثات ذكية مع أحدث نماذج الذكاء الاصطناعي"},
-                             {"icon": "fa-code", "title": "تحليل الأكواد", "desc": "فهم وتحليل أكواد البرمجة بجميع اللغات"},
-                             {"icon": "fa-image", "title": "تحليل الصور", "desc": "وصف وتحليل محتوى الصور بدقة عالية"},
-                             {"icon": "fa-file-pdf", "title": "تحليل المستندات", "desc": "قراءة و تلخيص ملفات PDF والنصوص"},
-                             {"icon": "fa-mobile", "title": "متعدد المنصات", "desc": "عمل على الويب وتطبيقات الموبايل"},
-                             {"icon": "fa-shield", "title": "آمن وخاص", "desc": "بياناتك محمية ومشفرة دائماً"}
-                         ])
+    features = [
+        {"icon": "robot", "title": "Advanced AI", "desc": "Smart conversations with latest AI models"},
+        {"icon": "code", "title": "Code Analysis", "desc": "Understand and analyze programming code"},
+        {"icon": "image", "title": "Image Analysis", "desc": "Describe and analyze image content"},
+        {"icon": "file-pdf", "title": "Document Analysis", "desc": "Read and summarize PDFs and texts"},
+        {"icon": "mobile", "title": "Multi-platform", "desc": "Works on web and mobile apps"},
+        {"icon": "shield", "title": "Secure & Private", "desc": "Your data is always protected"}
+    ]
+    
+    return render_template('home.html', features=features)
 
 @app.route('/dashboard')
 @login_required
@@ -381,10 +357,8 @@ def dashboard():
     user_id = session['user_id']
     username = session['username']
     
-    # تنظيف المحادثات القديمة
     cleanup_old_conversations()
     
-    # الحصول على الإحصائيات
     with data_lock:
         user_conversation = conversations.get(user_id, {})
         unread_notifications = sum(1 for note in notifications.get(user_id, []) if not note['read'])
@@ -393,7 +367,7 @@ def dashboard():
                          username=username,
                          avatar=generate_avatar(username),
                          unread_notifications=unread_notifications,
-                         last_active=datetime.fromtimestamp(user_conversation.get('last_active', time.time()) if user_conversation else None)
+                         last_active=datetime.fromtimestamp(user_conversation.get('last_active', time.time())) if user_conversation else None)
 
 @app.route('/chat', methods=['GET', 'POST'])
 @login_required
@@ -409,50 +383,48 @@ def chat():
                 filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
                 file.save(filepath)
                 
-                # تحليل الملف
                 content_type = mimetypes.guess_type(filepath)[0] or 'application/octet-stream'
                 
                 with data_lock:
                     context = "\n".join(conversations[user_id]["history"][-5:]) if user_id in conversations else None
                     conversations[user_id]["last_active"] = time.time()
-                    conversations[user_id]["history"].append(f"المستخدم: أرسل ملف {filename}")
+                    conversations[user_id]["history"].append(f"User: Sent file {filename}")
                 
                 analysis = analyze_file(filepath, content_type, context)
                 
                 if analysis:
                     with data_lock:
-                        conversations[user_id]["history"].append(f"البوت: {analysis[:500]}...")
+                        conversations[user_id]["history"].append(f"Bot: {analysis[:500]}...")
                     return jsonify({"success": True, "reply": analysis})
                 else:
-                    return jsonify({"success": False, "error": "تعذر تحليل الملف"})
+                    return jsonify({"success": False, "error": "Failed to analyze file"})
         
         message = request.form.get('message', '').strip()
         if message:
             with data_lock:
                 if user_id not in conversations:
                     conversations[user_id] = {
-                        "history": ["بدأ المستخدم محادثة جديدة"],
+                        "history": ["New conversation started"],
                         "last_active": time.time()
                     }
                 
                 conversations[user_id]["last_active"] = time.time()
-                conversations[user_id]["history"].append(f"المستخدم: {message}")
+                conversations[user_id]["history"].append(f"User: {message}")
                 
                 context = "\n".join(conversations[user_id]["history"][-5:])
-                prompt = f"{context}\n\nالسؤال: {message}" if context else message
+                prompt = f"{context}\n\nQuestion: {message}" if context else message
                 
                 try:
                     response = model.generate_content(prompt)
                     reply = format_response(response.text)
                     
-                    conversations[user_id]["history"].append(f"البوت: {reply}")
+                    conversations[user_id]["history"].append(f"Bot: {reply}")
                     
                     return jsonify({"success": True, "reply": reply})
                 except Exception as e:
-                    logger.error(f"خطأ في نموذج الذكاء الاصطناعي: {str(e)}")
-                    return jsonify({"success": False, "error": "حدث خطأ أثناء المعالجة"})
+                    logger.error(f"AI model error: {str(e)}")
+                    return jsonify({"success": False, "error": "Processing error"})
     
-    # GET request - عرض واجهة الدردشة
     with data_lock:
         conversation_history = conversations.get(user_id, {}).get("history", [])
     
@@ -468,11 +440,11 @@ def new_chat():
     
     with data_lock:
         conversations[user_id] = {
-            "history": ["بدأ المستخدم محادثة جديدة"],
+            "history": ["New conversation started"],
             "last_active": time.time()
         }
     
-    return jsonify({"success": True, "message": "تم بدء محادثة جديدة"})
+    return jsonify({"success": True, "message": "Started new chat"})
 
 @app.route('/settings', methods=['GET', 'POST'])
 @login_required
@@ -482,7 +454,7 @@ def user_settings_page():
     
     if request.method == 'POST':
         theme = request.form.get('theme', 'light')
-        language = request.form.get('language', 'ar')
+        language = request.form.get('language', 'en')
         notifications_enabled = request.form.get('notifications', 'off') == 'on'
         
         with data_lock:
@@ -496,14 +468,13 @@ def user_settings_page():
                 'updated_at': time.time()
             })
         
-        flash('تم تحديث الإعدادات بنجاح', 'success')
+        flash('Settings updated successfully', 'success')
         return redirect(url_for('user_settings_page'))
     
-    # GET request
     with data_lock:
         settings = user_settings.get(user_id, {
             'theme': 'light',
-            'language': 'ar',
+            'language': 'en',
             'notifications': True
         })
     
@@ -522,8 +493,8 @@ def user_notifications():
         mark_notifications_read(user_id)
     
     return render_template('notifications.html',
-                         username=session['username'],
-                         avatar=generate_avatar(session['username']),
+                         username=username,
+                         avatar=generate_avatar(username),
                          notifications=user_notes)
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -534,11 +505,6 @@ def login():
     if request.method == 'POST':
         username = request.form.get('username', '').strip()
         password = request.form.get('password', '').strip()
-        recaptcha_response = request.form.get('g-recaptcha-response')
-        
-        if not verify_recaptcha(recaptcha_response):
-            flash('التحقق من reCAPTCHA فشل', 'danger')
-            return redirect(url_for('login'))
         
         with data_lock:
             user = users.get(username)
@@ -550,21 +516,20 @@ def login():
                 
                 if user['id'] not in conversations:
                     conversations[user['id']] = {
-                        "history": ["بدأ المستخدم محادثة جديدة"],
+                        "history": ["New conversation started"],
                         "last_active": time.time()
                     }
                 else:
                     conversations[user['id']]["last_active"] = time.time()
                 
-                # إضافة إشعار ترحيبي
-                add_notification(user['id'], "مرحباً بعودتك! كيف يمكننا مساعدتك اليوم؟", "welcome")
+                add_notification(user['id'], "Welcome back! How can we help you today?", "welcome")
                 
-                flash('تم تسجيل الدخول بنجاح!', 'success')
+                flash('Logged in successfully!', 'success')
                 return redirect(url_for('dashboard'))
             else:
-                flash('اسم المستخدم أو كلمة المرور غير صحيحة', 'danger')
+                flash('Invalid username or password', 'danger')
     
-    return render_template('auth/login.html', recaptcha_site_key=RECAPTCHA_SITE_KEY)
+    return render_template('auth/login.html')
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
@@ -576,22 +541,17 @@ def register():
         email = request.form.get('email', '').strip()
         password = request.form.get('password', '').strip()
         confirm_password = request.form.get('confirm_password', '').strip()
-        recaptcha_response = request.form.get('g-recaptcha-response')
-        
-        if not verify_recaptcha(recaptcha_response):
-            flash('التحقق من reCAPTCHA فشل', 'danger')
-            return redirect(url_for('register'))
         
         if len(username) < 4:
-            flash('اسم المستخدم يجب أن يكون 4 أحرف على الأقل', 'danger')
+            flash('Username must be at least 4 characters', 'danger')
         elif len(password) < 6:
-            flash('كلمة المرور يجب أن تكون 6 أحرف على الأقل', 'danger')
+            flash('Password must be at least 6 characters', 'danger')
         elif password != confirm_password:
-            flash('كلمتا المرور غير متطابقتين', 'danger')
+            flash('Passwords do not match', 'danger')
         else:
             with data_lock:
                 if username in users:
-                    flash('اسم المستخدم موجود بالفعل', 'danger')
+                    flash('Username already exists', 'danger')
                 else:
                     user_id = str(uuid.uuid4())
                     users[username] = {
@@ -605,17 +565,16 @@ def register():
                     }
                     
                     conversations[user_id] = {
-                        "history": ["بدأ المستخدم محادثة جديدة"],
+                        "history": ["New conversation started"],
                         "last_active": time.time()
                     }
                     
-                    # إضافة إشعار ترحيبي
-                    add_notification(user_id, "مرحباً بك في OTH IA! يمكنك البدء بإرسال أسئلتك الآن.", "welcome")
+                    add_notification(user_id, "Welcome to OTH IA! You can start asking questions now.", "welcome")
                     
-                    flash('تم إنشاء الحساب بنجاح! يمكنك تسجيل الدخول الآن', 'success')
+                    flash('Account created successfully! Please login', 'success')
                     return redirect(url_for('login'))
     
-    return render_template('auth/register.html', recaptcha_site_key=RECAPTCHA_SITE_KEY)
+    return render_template('auth/register.html')
 
 @app.route('/logout')
 @login_required
@@ -626,7 +585,7 @@ def logout():
             del conversations[user_id]
     
     session.clear()
-    flash('تم تسجيل الخروج بنجاح', 'info')
+    flash('Logged out successfully', 'info')
     return redirect(url_for('home'))
 
 @app.route('/admin')
@@ -644,47 +603,6 @@ def admin_dashboard():
                          stats=stats,
                          recent_users=recent_users)
 
-# ==============================================
-# مسارات API
-# ==============================================
-
-@app.route('/api/chat/history', methods=['GET'])
-@login_required
-def get_chat_history():
-    user_id = session['user_id']
-    
-    with data_lock:
-        if user_id in conversations:
-            return jsonify({
-                "success": True,
-                "history": conversations[user_id]["history"]
-            })
-        return jsonify({"success": False, "history": []})
-
-@app.route('/api/notifications', methods=['GET'])
-@login_required
-def get_notifications():
-    user_id = session['user_id']
-    
-    with data_lock:
-        if user_id in notifications:
-            return jsonify({
-                "success": True,
-                "notifications": notifications[user_id]
-            })
-        return jsonify({"success": False, "notifications": []})
-
-@app.route('/api/notifications/read', methods=['POST'])
-@login_required
-def mark_notifications_as_read():
-    user_id = session['user_id']
-    mark_notifications_read(user_id)
-    return jsonify({"success": True})
-
-# ==============================================
-# مسارات بوت الماسنجر
-# ==============================================
-
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
     if request.method == 'GET':
@@ -692,14 +610,14 @@ def webhook():
         if verify_token == VERIFY_TOKEN:
             setup_messenger_profile()
             return request.args.get('hub.challenge')
-        return "فشل التحقق", 403
+        return "Verification failed", 403
     
     data = request.get_json()
     try:
         for entry in data.get('entry', []):
             for event in entry.get('messaging', []):
                 sender_id = event['sender']['id']
-                user_id = get_user_id(sender_id)
+                user_id = hashlib.sha256(sender_id.encode()).hexdigest()
                 current_time = time.time()
                 
                 cleanup_old_conversations()
@@ -714,7 +632,7 @@ def webhook():
                     with data_lock:
                         if user_id not in conversations:
                             conversations[user_id] = {
-                                "history": ["بدأ المستخدم محادثة جديدة"],
+                                "history": ["New conversation started"],
                                 "last_active": current_time
                             }
                             handle_command(sender_id, user_id, "GET_STARTED")
@@ -724,7 +642,7 @@ def webhook():
                         if 'attachments' in message:
                             for attachment in message['attachments']:
                                 if attachment['type'] == 'image':
-                                    send_message(sender_id, "⏳ جاري تحليل الصورة...")
+                                    send_message(sender_id, "⏳ Analyzing image...")
                                     image_url = attachment['payload']['url']
                                     image_path, content_type = download_file(image_url)
                                     
@@ -733,12 +651,12 @@ def webhook():
                                         analysis = analyze_file(image_path, content_type, context)
                                         
                                         if analysis:
-                                            conversations[user_id]["history"].append(f"صورة: {analysis[:200]}...")
-                                            send_message(sender_id, f"📸 تحليل الصورة:\n\n{analysis}")
+                                            conversations[user_id]["history"].append(f"Image: {analysis[:200]}...")
+                                            send_message(sender_id, f"📸 Image Analysis:\n\n{analysis}")
                                         else:
-                                            send_message(sender_id, "⚠️ تعذر تحليل الصورة")
+                                            send_message(sender_id, "⚠️ Failed to analyze image")
                                 elif attachment['type'] == 'file':
-                                    send_message(sender_id, "⏳ جاري تحليل الملف...")
+                                    send_message(sender_id, "⏳ Analyzing file...")
                                     file_url = attachment['payload']['url']
                                     file_path, content_type = download_file(file_url)
                                     
@@ -747,49 +665,45 @@ def webhook():
                                         analysis = analyze_file(file_path, content_type, context)
                                         
                                         if analysis:
-                                            conversations[user_id]["history"].append(f"ملف: {analysis[:200]}...")
-                                            send_message(sender_id, f"📄 تحليل الملف:\n\n{analysis}")
+                                            conversations[user_id]["history"].append(f"File: {analysis[:200]}...")
+                                            send_message(sender_id, f"📄 File Analysis:\n\n{analysis}")
                                         else:
-                                            send_message(sender_id, "⚠️ تعذر تحليل الملف")
+                                            send_message(sender_id, "⚠️ Failed to analyze file")
                             continue
                         
                         if 'text' in message:
                             user_message = message['text'].strip()
                             
-                            if user_message.lower() in ['مساعدة', 'help', '/help']:
+                            if user_message.lower() in ['help', '/help']:
                                 handle_command(sender_id, user_id, "HELP_CMD")
-                            elif user_message.lower() in ['new', '/new', 'جديد']:
+                            elif user_message.lower() in ['new', '/new']:
                                 conversations[user_id] = {
-                                    "history": ["بدأ المستخدم محادثة جديدة"],
+                                    "history": ["New conversation started"],
                                     "last_active": current_time
                                 }
-                                send_message(sender_id, "تم بدء محادثة جديدة. كيف يمكنني مساعدتك؟")
-                            elif user_message.lower() in ['settings', 'إعدادات', '/settings']:
+                                send_message(sender_id, "Started new chat. How can I help?")
+                            elif user_message.lower() in ['settings', '/settings']:
                                 handle_command(sender_id, user_id, "SETTINGS_CMD")
                             else:
                                 try:
                                     context = "\n".join(conversations[user_id]["history"][-5:])
-                                    prompt = f"{context}\n\nالسؤال: {user_message}" if context else user_message
+                                    prompt = f"{context}\n\nQuestion: {user_message}" if context else user_message
                                     
                                     response = model.generate_content(prompt)
                                     reply = response.text
                                     
-                                    conversations[user_id]["history"].append(f"المستخدم: {user_message}")
-                                    conversations[user_id]["history"].append(f"البوت: {reply}")
+                                    conversations[user_id]["history"].append(f"User: {user_message}")
+                                    conversations[user_id]["history"].append(f"Bot: {reply}")
                                     
                                     send_message(sender_id, reply)
                                 except Exception as e:
-                                    logger.error(f"خطأ في نموذج الذكاء الاصطناعي: {str(e)}")
-                                    send_message(sender_id, "⚠️ حدث خطأ أثناء المعالجة، يرجى المحاولة لاحقاً")
+                                    logger.error(f"AI model error: {str(e)}")
+                                    send_message(sender_id, "⚠️ Processing error, please try again")
     
     except Exception as e:
-        logger.error(f"خطأ في webhook: {str(e)}")
+        logger.error(f"Webhook error: {str(e)}")
     
     return jsonify({"status": "ok"}), 200
-
-# ==============================================
-# مسارات الملفات والموارد
-# ==============================================
 
 @app.route('/uploads/<filename>')
 @login_required
@@ -800,10 +714,7 @@ def uploaded_file(filename):
 def static_files(filename):
     return send_from_directory('static', filename)
 
-# ==============================================
-# معالجة الأخطاء
-# ==============================================
-
+# Error handlers
 @app.errorhandler(404)
 def page_not_found(e):
     return render_template('errors/404.html'), 404
@@ -816,22 +727,24 @@ def forbidden(e):
 def internal_error(e):
     return render_template('errors/500.html'), 500
 
-# ==============================================
-# التشغيل والصيانة
-# ==============================================
-
+# Background tasks
 def periodic_tasks():
     while True:
-        time.sleep(3600)  # كل ساعة
+        time.sleep(3600)
         cleanup_old_conversations()
-        logger.info("تم تنظيف المحادثات القديمة")
+        logger.info("Performed periodic cleanup")
+
+# Vercel requirement
+@app.route('/favicon.ico')
+def favicon():
+    return '', 204
 
 if __name__ == '__main__':
-    # بدء خلفية المهام الدورية
+    # Start background tasks
     Thread(target=periodic_tasks, daemon=True).start()
     
-    # إعداد واجهة الماسنجر
+    # Setup messenger profile
     setup_messenger_profile()
     
-    # تشغيل التطبيق
+    # Run the app
     app.run(threaded=True)
