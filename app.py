@@ -25,7 +25,7 @@ VERIFY_TOKEN = "d51ee4e3183dbbd9a27b7d2c1af8c655"
 
 # Initialize Gemini AI
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-pro')
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 # Database simulation
 users_db = {
