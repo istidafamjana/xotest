@@ -3,3 +3,5 @@ requests
 google-generativeai
 python-dotenv
 Werkzeug
+pillow
+python-dotenv
