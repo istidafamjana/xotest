@@ -1,4 +1,3 @@
-# app.py
 from flask import Flask, request, jsonify, render_template_string, redirect, url_for, session, flash
 from werkzeug.security import generate_password_hash, check_password_hash
 import google.generativeai as genai
@@ -8,23 +7,27 @@ import json
 import time
 from datetime import datetime
 from threading import Lock
-import random
-import re
+import requests
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', os.urandom(24).hex())
+app.secret_key = 'your-secret-key-123'  # تغيير هذا في الإنتاج
 app.config['PERMANENT_SESSION_LIFETIME'] = 3600 * 5  # 5 ساعات
 
-# تهيئة نموذج Gemini
-genai.configure(api_key=os.environ.get('GEMINI_API_KEY'))
-model = genai.GenerativeModel('gemini-pro')
+# التوكنات المضمنة مباشرة (للتطوير فقط)
+GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"
+FB_PAGE_TOKEN = "EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD"
+FB_VERIFY_TOKEN = "d51ee4e3183dbbd9a27b7d2c1af8c655"
 
-# تخزين البيانات (مؤقت - للتنمية فقط)
+# تهيئة نموذج Gemini 1.5 Flash
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-1.5-flash')
+
+# تخزين البيانات
 users = {}
 conversations = {}
 db_lock = Lock()
 
-# ===== تصميم الموقع =====
+## ====== تصميم الموقع ======
 BASE_HTML = """
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
@@ -64,9 +67,6 @@ BASE_HTML = """
             to {{
                 box-shadow: 0 0 20px rgba(99, 102, 241, 0.8);
             }}
-        }}
-        .neon-text {{
-            text-shadow: 0 0 5px rgba(99, 102, 241, 0.8);
         }}
         .message-user {{
             background: var(--primary);
@@ -156,15 +156,17 @@ HOME_CONTENT = """
         ذكاء اصطناعي متقدم للجميع
     </h1>
     <p class="text-lg text-gray-600 dark:text-gray-400 mb-8 max-w-2xl">
-        تجربة محادثة ذكية وسريعة باستخدام أحدث تقنيات الذكاء الاصطناعي من جوجل
+        تجربة محادثة ذكية وسريعة باستخدام Gemini 1.5 Flash
     </p>
     <div class="flex space-x-4">
         <a href="/chat" class="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition-all glow-on-hover">
             ابدأ المحادثة الآن
         </a>
-        <a href="/about" class="px-6 py-3 border border-indigo-600 text-indigo-600 dark:text-indigo-400 dark:border-indigo-400 hover:bg-indigo-50 dark:hover:bg-slate-700 rounded-lg font-medium transition-all">
-            تعرف أكثر
+        {% if 'user_id' not in session %}
+        <a href="/login" class="px-6 py-3 border border-indigo-600 text-indigo-600 dark:text-indigo-400 dark:border-indigo-400 hover:bg-indigo-50 dark:hover:bg-slate-700 rounded-lg font-medium transition-all">
+            تسجيل الدخول
         </a>
+        {% endif %}
     </div>
 </div>
 
@@ -175,21 +177,21 @@ HOME_CONTENT = """
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
             </svg>
         </div>
-        <h3 class="text-xl font-semibold mb-2">محادثة ذكية</h3>
+        <h3 class="text-xl font-semibold mb-2">محادثة فائقة السرعة</h3>
         <p class="text-gray-600 dark:text-gray-400">
-            تفاعل طبيعي مع ذكاء اصطناعي يفهم السياق ويتعلم من كل محادثة
+            باستخدام Gemini 1.5 Flash للحصول على إجابات فورية
         </p>
     </div>
     
     <div class="bg-white/80 dark:bg-slate-800/80 p-6 rounded-xl shadow-sm backdrop-blur-sm border border-gray-200 dark:border-slate-700">
         <div class="w-12 h-12 gradient-bg rounded-lg flex items-center justify-center text-white mb-4">
             <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
             </svg>
         </div>
-        <h3 class="text-xl font-semibold mb-2">وضع ليلي</h3>
+        <h3 class="text-xl font-semibold mb-2">وضع ليلي مريح</h3>
         <p class="text-gray-600 dark:text-gray-400">
-            تجربة مريحة للعين في كل الأوقات مع ميزة الوضع الليلي التلقائي
+            تجربة تصفح مريحة للعين في جميع الأوقات
         </p>
     </div>
     
@@ -199,10 +201,40 @@ HOME_CONTENT = """
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
             </svg>
         </div>
-        <h3 class="text-xl font-semibold mb-2">آمن وسريع</h3>
+        <h3 class="text-xl font-semibold mb-2">متعدد المنصات</h3>
         <p class="text-gray-600 dark:text-gray-400">
-            تشفير متقدم وسرعة فائقة مع بنية تحتية موزعة عالميًا
+            تواصل عبر الموقع أو عبر مسنجر فيسبوك
         </p>
+    </div>
+</div>
+"""
+
+LOGIN_CONTENT = """
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                <h3 class="mb-0">تسجيل الدخول</h3>
+            </div>
+            <div class="card-body">
+                <form method="POST" action="/login">
+                    <div class="mb-3">
+                        <label for="username" class="form-label">اسم المستخدم</label>
+                        <input type="text" class="form-control" id="username" name="username" required>
+                    </div>
+                    <div class="mb-3">
+                        <label for="password" class="form-label">كلمة المرور</label>
+                        <input type="password" class="form-control" id="password" name="password" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary w-100">
+                        <i class="fas fa-sign-in-alt"></i> تسجيل الدخول
+                    </button>
+                </form>
+                <div class="mt-3 text-center">
+                    <p>ليس لديك حساب؟ <a href="/register">سجل الآن</a></p>
+                </div>
+            </div>
+        </div>
     </div>
 </div>
 """
@@ -237,7 +269,7 @@ CHAT_CONTENT = """
             </button>
         </form>
         <p class="text-xs text-gray-500 dark:text-gray-400 mt-2 text-center">
-            Gemini قد يقدم معلومات غير دقيقة أحيانًا
+            يدعم الموقع الدردشة عبر الويب وفيسبوك مسنجر
         </p>
     </div>
 </div>
@@ -308,10 +340,11 @@ document.addEventListener('DOMContentLoaded', () => {
 </script>
 """
 
-# ===== مسارات التطبيق =====
+## ====== مسارات الموقع ======
 @app.route('/')
 def home():
     dark_mode = 'dark' if request.cookies.get('theme') == 'dark' else ''
+    
     auth_buttons = """
     <div class="flex space-x-2">
         <a href="/login" class="px-4 py-2 text-indigo-600 dark:text-indigo-400 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-lg transition-all">
@@ -342,6 +375,35 @@ def home():
             auth_buttons=auth_buttons,
             content=HOME_CONTENT,
             flashes=flashes,
+            year=datetime.now().year,
+            additional_js=""
+        )
+    )
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '').strip()
+        
+        with db_lock:
+            user = users.get(username)
+            if user and check_password_hash(user['password'], password):
+                session['user_id'] = user['id']
+                session['username'] = username
+                flash('تم تسجيل الدخول بنجاح!', 'success')
+                return redirect(url_for('chat'))
+            else:
+                flash('اسم المستخدم أو كلمة المرور غير صحيحة', 'danger')
+    
+    dark_mode = 'dark' if request.cookies.get('theme') == 'dark' else ''
+    return render_template_string(
+        BASE_HTML.format(
+            title="تسجيل الدخول",
+            dark_mode=dark_mode,
+            auth_buttons='',
+            content=LOGIN_CONTENT,
+            flashes='',
             year=datetime.now().year,
             additional_js=""
         )
@@ -402,13 +464,8 @@ def api_chat():
         })
         
         try:
-            # استخدام آخر 5 رسائل كسياق
-            context = "\n".join(
-                f"{msg['sender']}: {msg['text']}" 
-                for msg in conversations[user_id][-5:]
-            )
-            
-            response = model.generate_content(f"{context}\n\nassistant:")
+            # استخدام Gemini 1.5 Flash
+            response = model.generate_content(message)
             reply = response.text
             
             conversations[user_id].append({
@@ -421,7 +478,96 @@ def api_chat():
         except Exception as e:
             return jsonify({'error': str(e)}), 500
 
-# ===== تكوين Vercel =====
-# ===== تشغيل التطبيق =====
+## ====== دعم فيسبوك مسنجر ======
+@app.route('/webhook', methods=['GET', 'POST'])
+def webhook():
+    if request.method == 'GET':
+        # التحقق من التوكن
+        if request.args.get('hub.verify_token') == FB_VERIFY_TOKEN:
+            setup_messenger_profile()
+            return request.args.get('hub.challenge')
+        return "Verification failed", 403
+    
+    # معالجة رسائل فيسبوك
+    data = request.get_json()
+    try:
+        for entry in data.get('entry', []):
+            for event in entry.get('messaging', []):
+                sender_id = event['sender']['id']
+                
+                if event.get('message'):
+                    message = event['message'].get('text', '')
+                    if message:
+                        handle_facebook_message(sender_id, message)
+                
+                elif event.get('postback'):
+                    payload = event['postback']['payload']
+                    if payload == 'GET_STARTED':
+                        send_facebook_message(sender_id, "مرحبًا بك في بوت Gemini AI! اكتب رسالتك وسأساعدك.")
+    except Exception as e:
+        print(f"Error in webhook: {str(e)}")
+    
+    return jsonify({'status': 'ok'}), 200
+
+def setup_messenger_profile():
+    url = f"https://graph.facebook.com/v17.0/me/messenger_profile?access_token={FB_PAGE_TOKEN}"
+    profile_data = {
+        "get_started": {"payload": "GET_STARTED"},
+        "greeting": [
+            {
+                "locale": "default",
+                "text": "مرحبًا بك في بوت Gemini AI الذكي!"
+            }
+        ]
+    }
+    try:
+        response = requests.post(url, json=profile_data)
+        response.raise_for_status()
+        print("تم إعداد صفحة الماسنجر بنجاح")
+    except Exception as e:
+        print(f"خطأ في إعداد صفحة الماسنجر: {str(e)}")
+
+def send_facebook_message(recipient_id, message):
+    url = f"https://graph.facebook.com/v17.0/me/messages?access_token={FB_PAGE_TOKEN}"
+    message_data = {
+        "recipient": {"id": recipient_id},
+        "message": {"text": message}
+    }
+    try:
+        response = requests.post(url, json=message_data)
+        response.raise_for_status()
+        return True
+    except Exception as e:
+        print(f"خطأ في إرسال رسالة فيسبوك: {str(e)}")
+        return False
+
+def handle_facebook_message(sender_id, message):
+    with db_lock:
+        if sender_id not in conversations:
+            conversations[sender_id] = []
+        
+        conversations[sender_id].append({
+            'sender': 'user',
+            'text': message,
+            'time': time.time()
+        })
+        
+        try:
+            # استخدام Gemini 1.5 Flash
+            response = model.generate_content(message)
+            reply = response.text
+            
+            conversations[sender_id].append({
+                'sender': 'bot',
+                'text': reply,
+                'time': time.time()
+            })
+            
+            send_facebook_message(sender_id, reply)
+        except Exception as e:
+            send_facebook_message(sender_id, "عذرًا، حدث خطأ في معالجة رسالتك.")
+            print(f"Error handling FB message: {str(e)}")
+
+## ====== تشغيل التطبيق ======
 if __name__ == '__main__':
     app.run(debug=True)
