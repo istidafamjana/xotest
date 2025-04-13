@@ -1,6 +1,8 @@
-Flask==2.3.2
-google-generativeai==0.3.2
-Pillow==10.0.1
-requests==2.31.0
-werkzeug==2.3.7
-gunicorn==20.1.0
+flask
+google-generativeai
+pdfplumber
+python-docx 
+Pillow
+arabic-reshaper
+python-bidi
+flask-limiter
