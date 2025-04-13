@@ -5,181 +5,574 @@ import hashlib
 import logging
 import tempfile
 import urllib.request
-from datetime import timedelta
-from threading import Lock
+from datetime import datetime, timedelta
+from threading import Lock, Thread
 from functools import wraps
+import json
 
-from flask import Flask, request, jsonify, render_template, redirect, url_for, session, flash
+from flask import Flask, request, jsonify, render_template_string, redirect, url_for, session, flash, send_from_directory
 from werkzeug.security import generate_password_hash, check_password_hash
 import requests
 import google.generativeai as genai
+from markdown import markdown
+from pygments import highlight
+from pygments.lexers import get_lexer_by_name
+from pygments.formatters import HtmlFormatter
 
 # تهيئة التطبيق
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-oth-ia-advanced')
-app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=5)
-app.config['TEMPLATES_AUTO_RELOAD'] = True
+app.secret_key = os.environ.get('SECRET_KEY', 'super-secret-key-oth-ai-v3')
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB
 
 # تكوين السجلات
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger('OTH_IA')
-
-# التوكنات والمفاتيح
-PAGE_ACCESS_TOKEN = "EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD"
-VERIFY_TOKEN = "d51ee4e3183dbbd9a27b7d2c1af8c655"
-GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"
+logger = logging.getLogger('OTH_AI')
 
 # تهيئة نموذج Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+genai.configure(api_key=os.environ.get('GEMINI_API_KEY', 'your-gemini-api-key'))
+model = genai.GenerativeModel('gemini-1.5-pro')
 
-# تخزين المحادثات والمستخدمين
-conversations = {}
-users = {}
-CONVERSATION_TIMEOUT = 5 * 60 * 60  # 5 ساعات بالثواني
-data_lock = Lock()
+# قواعد البيانات المؤقتة
+users_db = {}
+conversations_db = {}
+files_db = {}
+CONVERSATION_TTL = 5 * 60 * 60  # 5 ساعات
+db_lock = Lock()
 
 # ==============================================
-# ديكورات المسارات ووظائف المساعدة
+# وظائف المساعدة
 # ==============================================
 
 def login_required(f):
     @wraps(f)
-    def decorated_function(*args, **kwargs):
+    def decorated(*args, **kwargs):
         if 'user_id' not in session:
             flash('يجب تسجيل الدخول أولاً', 'danger')
             return redirect(url_for('login', next=request.url))
         return f(*args, **kwargs)
-    return decorated_function
+    return decorated
 
-def get_user_id(sender_id):
-    return hashlib.sha256(sender_id.encode()).hexdigest()
+def generate_user_id():
+    return str(uuid.uuid4())
 
-def setup_messenger_profile():
-    url = f"https://graph.facebook.com/v17.0/me/messenger_profile?access_token={PAGE_ACCESS_TOKEN}"
-    payload = {
-        "get_started": {"payload": "GET_STARTED"},
-        "persistent_menu": [
-            {
-                "locale": "default",
-                "composer_input_disabled": False,
-                "call_to_actions": [
-                    {
-                        "type": "web_url",
-                        "title": "🌐 الانتقال للويب",
-                        "url": "https://your-app.vercel.app/chat",
-                        "webview_height_ratio": "full",
-                        "messenger_extensions": True
-                    },
-                    {
-                        "type": "postback",
-                        "title": "🆘 المساعدة",
-                        "payload": "HELP_CMD"
-                    },
-                    {
-                        "type": "postback",
-                        "title": "🚪 تسجيل الخروج",
-                        "payload": "LOGOUT_CMD"
-                    }
-                ]
-            }
-        ],
-        "whitelisted_domains": ["https://your-app.vercel.app"],
-        "greeting": [
-            {
-                "locale": "default",
-                "text": "مرحبًا بك في بوت OTH IA! 💎\n\nيمكنك إرسال أي سؤال أو صورة وسأساعدك."
-            }
-        ]
-    }
-    try:
-        response = requests.post(url, json=payload)
-        response.raise_for_status()
-        logger.info("تم إعداد واجهة الماسنجر بنجاح")
-    except Exception as e:
-        logger.error(f"خطأ في إعداد واجهة الماسنجر: {str(e)}")
+def hash_password(password):
+    return generate_password_hash(password)
 
-def download_image(url):
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0 (OTH IA Image Downloader)'}
-        req = urllib.request.Request(url, headers=headers)
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp_file:
-            with urllib.request.urlopen(req) as response:
-                tmp_file.write(response.read())
-            return tmp_file.name
-    except Exception as e:
-        logger.error(f"خطأ في تحميل الصورة: {str(e)}")
-        return None
+def check_password(hashed, password):
+    return check_password_hash(hashed, password)
 
-def analyze_image(image_path, context=None):
-    try:
-        img = genai.upload_file(image_path)
-        prompt = "حلل هذه الصورة بدقة وقدم وصفاً شاملاً مع تمييز الأجزاء المهمة:"
-        if context:
-            prompt = f"سياق المحادثة:\n{context}\n{prompt}"
-        response = model.generate_content([prompt, img])
-        return format_response(response.text)
-    except Exception as e:
-        logger.error(f"خطأ في تحليل الصورة: {str(e)}")
-        return None
-    finally:
-        if image_path and os.path.exists(image_path):
-            os.unlink(image_path)
+def save_conversation(user_id, messages):
+    with db_lock:
+        conversations_db[user_id] = {
+            'messages': messages,
+            'last_active': time.time(),
+            'created_at': time.time()
+        }
 
-def send_message(recipient_id, message_text, buttons=None):
-    url = f"https://graph.facebook.com/v17.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
-    payload = {
-        "recipient": {"id": recipient_id},
-        "message": {"text": message_text} if not buttons else {
-            "attachment": {
-                "type": "template",
-                "payload": {
-                    "template_type": "button",
-                    "text": message_text,
-                    "buttons": buttons
-                }
-            }
-        },
-        "messaging_type": "RESPONSE"
-    }
-    try:
-        response = requests.post(url, json=payload)
-        response.raise_for_status()
-        return True
-    except Exception as e:
-        logger.error(f"خطأ في إرسال الرسالة: {str(e)}")
-        return False
-
-def format_response(text):
-    if "```" in text:
-        parts = text.split("```")
-        formatted = []
-        for i, part in enumerate(parts):
-            if i % 2 == 1:
-                formatted.append(f'<div class="code-block"><pre><code>{part}</code></pre><button class="copy-btn" onclick="copyCode(this)">نسخ الكود</button></div>')
-            else:
-                formatted.append(part.replace("\n", "<br>"))
-        return "".join(formatted)
-    return text.replace("\n", "<br>")
+def get_conversation(user_id):
+    with db_lock:
+        return conversations_db.get(user_id, {'messages': [], 'last_active': time.time()})
 
 def cleanup_old_conversations():
-    current_time = time.time()
-    with data_lock:
-        for user_id in list(conversations.keys()):
-            if current_time - conversations[user_id]["last_active"] > CONVERSATION_TIMEOUT:
-                del conversations[user_id]
-                logger.info(f"تم حذف محادثة المستخدم {user_id} لانتهاء المهلة")
+    while True:
+        time.sleep(3600)  # كل ساعة
+        current_time = time.time()
+        with db_lock:
+            for user_id in list(conversations_db.keys()):
+                if current_time - conversations_db[user_id]['last_active'] > CONVERSATION_TTL:
+                    del conversations_db[user_id]
+                    logger.info(f"تم تنظيف محادثة المستخدم {user_id}")
 
-def handle_command(sender_id, user_id, command):
-    if command == "GET_STARTED":
-        send_message(sender_id, "مرحباً بك في OTH IA! 💎\n\nيمكنك إرسال أي سؤال أو صورة وسأساعدك.")
-    elif command == "HELP_CMD":
-        send_message(sender_id, "🆘 مركز المساعدة:\n\n• اكتب سؤالك مباشرة\n• أرسل صورة لتحليلها\n• /new لبدء محادثة جديدة")
-    elif command == "LOGOUT_CMD":
-        with data_lock:
-            if user_id in conversations:
-                del conversations[user_id]
-        send_message(sender_id, "تم تسجيل الخروج بنجاح. يمكنك العودة في أي وقت!")
+def analyze_code(code, language=None):
+    try:
+        if language:
+            lexer = get_lexer_by_name(language, stripall=True)
+        else:
+            lexer = get_lexer_by_name('python', stripall=True)
+            
+        formatter = HtmlFormatter(style='friendly', full=True, cssclass="codehilite")
+        highlighted = highlight(code, lexer, formatter)
+        return highlighted
+    except:
+        return f"<pre><code>{code}</code></pre>"
+
+def format_ai_response(text):
+    # تحويل Markdown إلى HTML
+    html = markdown(text)
+    
+    # معالجة الأكواد البرمجية
+    if '```' in html:
+        parts = html.split('```')
+        formatted = []
+        for i, part in enumerate(parts):
+            if i % 2 == 1:  # هذا جزء كود
+                lang, *code = part.split('\n', 1)
+                lang = lang.strip() or 'text'
+                code = code[0] if code else ''
+                formatted.append(analyze_code(code, language=lang))
+            else:
+                formatted.append(part)
+        return ''.join(formatted)
+    return html
+
+def render_template(template_name, **context):
+    templates = {
+        'base.html': BASE_TEMPLATE,
+        'index.html': INDEX_TEMPLATE,
+        'auth/login.html': LOGIN_TEMPLATE,
+        'auth/register.html': REGISTER_TEMPLATE,
+        'dashboard/index.html': DASHBOARD_TEMPLATE,
+        'dashboard/chat.html': CHAT_TEMPLATE,
+        'dashboard/settings.html': SETTINGS_TEMPLATE,
+        '404.html': NOT_FOUND_TEMPLATE
+    }
+    
+    if template_name not in templates:
+        return "Template not found", 404
+    
+    base_template = templates['base.html']
+    content_template = templates[template_name]
+    
+    # دمج القوالب
+    full_template = base_template.replace('{% block content %}', content_template)
+    
+    # معالجة المتغيرات
+    for key, value in context.items():
+        full_template = full_template.replace(f'{{{{ {key} }}}}', str(value))
+    
+    # إزالة البلوكات غير المستخدمة
+    full_template = full_template.replace('{% block extra_css %}', '')
+    full_template = full_template.replace('{% endblock %}', '')
+    full_template = full_template.replace('{% block extra_js %}', '')
+    
+    return render_template_string(full_template)
+
+# ==============================================
+# القوالب المضمنة
+# ==============================================
+
+BASE_TEMPLATE = '''
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}OTH AI{% endblock %}</title>
+    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary: #4361ee;
+            --primary-dark: #3a56d4;
+            --secondary: #3f37c9;
+            --success: #4cc9f0;
+            --warning: #f8961e;
+            --danger: #f72585;
+            --light: #f8f9fa;
+            --dark: #212529;
+            --gray: #6c757d;
+            --gray-light: #e9ecef;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Tajawal', sans-serif;
+        }
+        
+        body {
+            background-color: #f5f7fb;
+            color: var(--dark);
+            direction: rtl;
+        }
+        
+        .navbar {
+            background: white;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 1000;
+        }
+        
+        .logo {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--primary);
+            text-decoration: none;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        
+        .btn {
+            display: inline-block;
+            padding: 0.75rem 1.5rem;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            border: none;
+            cursor: pointer;
+        }
+        
+        .btn-primary {
+            background-color: var(--primary);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background-color: var(--primary-dark);
+        }
+        
+        .alert {
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+        }
+        
+        .alert-success {
+            background-color: #d1fae5;
+            color: #065f46;
+        }
+        
+        .alert-danger {
+            background-color: #fee2e2;
+            color: #b91c1c;
+        }
+        
+        .code-block {
+            position: relative;
+            margin: 1rem 0;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        
+        .code-header {
+            background-color: var(--dark);
+            color: white;
+            padding: 0.5rem 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .copy-btn {
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            border: none;
+            padding: 0.25rem 0.75rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+        
+        pre {
+            margin: 0;
+            padding: 1rem;
+            background-color: #f8f9fa;
+            overflow-x: auto;
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                padding: 1rem;
+            }
+        }
+    </style>
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <nav class="navbar">
+        <a href="/" class="logo">OTH AI</a>
+        <div>
+            {% if 'user_id' in session %}
+                <a href="/dashboard" class="btn btn-primary">لوحة التحكم</a>
+                <a href="/logout" class="btn">تسجيل الخروج</a>
+            {% else %}
+                <a href="/login" class="btn">تسجيل الدخول</a>
+                <a href="/register" class="btn btn-primary">إنشاء حساب</a>
+            {% endif %}
+        </div>
+    </nav>
+
+    <main class="container">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ category }}">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        
+        {% block content %}{% endblock %}
+    </main>
+
+    <script>
+        function copyCode(button) {
+            const codeBlock = button.parentElement;
+            const code = codeBlock.querySelector('code').innerText;
+            
+            navigator.clipboard.writeText(code)
+                .then(() => {
+                    button.textContent = 'تم النسخ!';
+                    setTimeout(() => {
+                        button.textContent = 'نسخ الكود';
+                    }, 2000);
+                });
+        }
+    </script>
+    
+    {% block extra_js %}{% endblock %}
+</body>
+</html>
+'''
+
+INDEX_TEMPLATE = '''
+<div style="text-align: center; padding: 4rem 0;">
+    <h1 style="font-size: 2.5rem; margin-bottom: 1.5rem;">مرحباً بك في OTH AI</h1>
+    <p style="font-size: 1.25rem; margin-bottom: 2rem; color: var(--gray);">
+        منصة الذكاء الاصطناعي المتقدم للدردشة الذكية وتحليل المحتوى
+    </p>
+    <div style="display: flex; justify-content: center; gap: 1rem;">
+        <a href="/register" class="btn btn-primary" style="padding: 1rem 2rem;">ابدأ الآن</a>
+        <a href="/login" class="btn" style="padding: 1rem 2rem;">تسجيل الدخول</a>
+    </div>
+</div>
+'''
+
+LOGIN_TEMPLATE = '''
+<div style="max-width: 500px; margin: 0 auto; background: white; padding: 2rem; border-radius: 12px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);">
+    <h2 style="text-align: center; margin-bottom: 1.5rem;">تسجيل الدخول</h2>
+    <form action="/login" method="POST">
+        <div style="margin-bottom: 1.5rem;">
+            <label style="display: block; margin-bottom: 0.5rem;">البريد الإلكتروني</label>
+            <input type="email" name="email" required style="width: 100%; padding: 0.75rem; border: 1px solid #ddd; border-radius: 8px;">
+        </div>
+        <div style="margin-bottom: 1.5rem;">
+            <label style="display: block; margin-bottom: 0.5rem;">كلمة المرور</label>
+            <input type="password" name="password" required style="width: 100%; padding: 0.75rem; border: 1px solid #ddd; border-radius: 8px;">
+        </div>
+        <div style="margin-bottom: 1.5rem; display: flex; align-items: center;">
+            <input type="checkbox" name="remember" id="remember" style="margin-left: 0.5rem;">
+            <label for="remember">تذكرني</label>
+        </div>
+        <button type="submit" class="btn btn-primary" style="width: 100%; padding: 0.75rem;">تسجيل الدخول</button>
+    </form>
+    <div style="text-align: center; margin-top: 1.5rem;">
+        ليس لديك حساب؟ <a href="/register">إنشاء حساب جديد</a>
+    </div>
+</div>
+'''
+
+REGISTER_TEMPLATE = '''
+<div style="max-width: 500px; margin: 0 auto; background: white; padding: 2rem; border-radius: 12px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);">
+    <h2 style="text-align: center; margin-bottom: 1.5rem;">إنشاء حساب جديد</h2>
+    <form action="/register" method="POST">
+        <div style="margin-bottom: 1.5rem;">
+            <label style="display: block; margin-bottom: 0.5rem;">الاسم الكامل</label>
+            <input type="text" name="name" required minlength="3" style="width: 100%; padding: 0.75rem; border: 1px solid #ddd; border-radius: 8px;">
+        </div>
+        <div style="margin-bottom: 1.5rem;">
+            <label style="display: block; margin-bottom: 0.5rem;">البريد الإلكتروني</label>
+            <input type="email" name="email" required style="width: 100%; padding: 0.75rem; border: 1px solid #ddd; border-radius: 8px;">
+        </div>
+        <div style="margin-bottom: 1.5rem;">
+            <label style="display: block; margin-bottom: 0.5rem;">كلمة المرور</label>
+            <input type="password" name="password" required minlength="8" style="width: 100%; padding: 0.75rem; border: 1px solid #ddd; border-radius: 8px;">
+            <small style="color: var(--gray);">يجب أن تكون 8 أحرف على الأقل</small>
+        </div>
+        <div style="margin-bottom: 1.5rem;">
+            <label style="display: block; margin-bottom: 0.5rem;">تأكيد كلمة المرور</label>
+            <input type="password" name="confirm_password" required style="width: 100%; padding: 0.75rem; border: 1px solid #ddd; border-radius: 8px;">
+        </div>
+        <button type="submit" class="btn btn-primary" style="width: 100%; padding: 0.75rem;">إنشاء حساب</button>
+    </form>
+    <div style="text-align: center; margin-top: 1.5rem;">
+        لديك حساب بالفعل؟ <a href="/login">تسجيل الدخول</a>
+    </div>
+</div>
+'''
+
+DASHBOARD_TEMPLATE = '''
+<div style="display: flex; min-height: calc(100vh - 120px);">
+    <aside style="width: 250px; background: white; border-left: 1px solid #eee; padding: 1rem;">
+        <div style="text-align: center; margin-bottom: 2rem;">
+            <div style="width: 80px; height: 80px; background: var(--gray-light); border-radius: 50%; margin: 0 auto 1rem; display: flex; align-items: center; justify-content: center;">
+                <i class="fas fa-user" style="font-size: 2rem; color: var(--gray);"></i>
+            </div>
+            <h3>{{ user_name }}</h3>
+            <small style="color: var(--gray);">{{ user_email }}</small>
+        </div>
+        
+        <nav>
+            <ul style="list-style: none;">
+                <li style="margin-bottom: 0.5rem;">
+                    <a href="/dashboard" style="display: block; padding: 0.75rem; border-radius: 8px; text-decoration: none; color: var(--dark); background: var(--primary); color: white;">
+                        <i class="fas fa-comments" style="margin-left: 0.5rem;"></i> الدردشة
+                    </a>
+                </li>
+                <li style="margin-bottom: 0.5rem;">
+                    <a href="/settings" style="display: block; padding: 0.75rem; border-radius: 8px; text-decoration: none; color: var(--dark);">
+                        <i class="fas fa-cog" style="margin-left: 0.5rem;"></i> الإعدادات
+                    </a>
+                </li>
+            </ul>
+        </nav>
+    </aside>
+    
+    <main style="flex: 1; padding: 2rem;">
+        {% block dashboard_content %}{% endblock %}
+    </main>
+</div>
+'''
+
+CHAT_TEMPLATE = '''
+<div style="display: flex; height: calc(100vh - 180px); background: white; border-radius: 12px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);">
+    <div style="flex: 1; display: flex; flex-direction: column;">
+        <div id="chat-messages" style="flex: 1; padding: 1.5rem; overflow-y: auto;">
+            {% for msg in conversation %}
+                <div style="margin-bottom: 1.5rem; max-width: 80%; {% if msg.role == 'user' %}margin-left: auto; background-color: #f0f7ff;{% else %}margin-right: auto; background-color: #f8f9fa;{% endif %} padding: 1rem; border-radius: {% if msg.role == 'user' %}12px 12px 0 12px;{% else %}12px 12px 12px 0;{% endif %}">
+                    <div style="line-height: 1.6;">
+                        {{ msg.content|safe }}
+                    </div>
+                    <small style="color: #6c757d; display: block; text-align: {% if msg.role == 'user' %}left{% else %}right{% endif %}; margin-top: 0.5rem;">
+                        {{ datetime.fromtimestamp(msg.timestamp).strftime('%Y-%m-%d %H:%M') }}
+                    </small>
+                </div>
+            {% endfor %}
+        </div>
+        
+        <div style="padding: 1rem; border-top: 1px solid #eee; display: flex; gap: 0.5rem;">
+            <textarea id="message-input" placeholder="اكتب رسالتك هنا..." rows="2" style="flex: 1; padding: 1rem; border: 1px solid #ddd; border-radius: 8px; resize: none; min-height: 60px;"></textarea>
+            <button id="send-btn" class="btn btn-primary" style="align-self: flex-end;">
+                <i class="fas fa-paper-plane"></i>
+            </button>
+        </div>
+    </div>
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const messageInput = document.getElementById('message-input');
+        const sendBtn = document.getElementById('send-btn');
+        const chatMessages = document.getElementById('chat-messages');
+        
+        function sendMessage() {
+            const message = messageInput.value.trim();
+            if (!message) return;
+            
+            // إضافة رسالة المستخدم إلى الواجهة
+            const userMsgDiv = document.createElement('div');
+            userMsgDiv.style.marginBottom = '1.5rem';
+            userMsgDiv.style.maxWidth = '80%';
+            userMsgDiv.style.marginLeft = 'auto';
+            userMsgDiv.style.backgroundColor = '#f0f7ff';
+            userMsgDiv.style.padding = '1rem';
+            userMsgDiv.style.borderRadius = '12px 12px 0 12px';
+            userMsgDiv.innerHTML = `
+                <div style="line-height: 1.6;">${message}</div>
+                <small style="color: #6c757d; display: block; text-align: left; margin-top: 0.5rem;">
+                    ${new Date().toLocaleTimeString()}
+                </small>
+            `;
+            chatMessages.appendChild(userMsgDiv);
+            
+            messageInput.value = '';
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+            
+            // إرسال الرسالة إلى الخادم
+            fetch('/api/chat', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ message: message })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    addMessage('حدث خطأ: ' + data.error, 'ai');
+                } else {
+                    addMessage(data.response, 'ai');
+                }
+            })
+            .catch(error => {
+                addMessage('حدث خطأ في الاتصال بالخادم', 'ai');
+            });
+        }
+        
+        function addMessage(content, role) {
+            const msgDiv = document.createElement('div');
+            msgDiv.style.marginBottom = '1.5rem';
+            msgDiv.style.maxWidth = '80%';
+            
+            if (role === 'user') {
+                msgDiv.style.marginLeft = 'auto';
+                msgDiv.style.backgroundColor = '#f0f7ff';
+                msgDiv.style.borderRadius = '12px 12px 0 12px';
+            } else {
+                msgDiv.style.marginRight = 'auto';
+                msgDiv.style.backgroundColor = '#f8f9fa';
+                msgDiv.style.borderRadius = '12px 12px 12px 0';
+            }
+            
+            msgDiv.style.padding = '1rem';
+            msgDiv.innerHTML = `
+                <div style="line-height: 1.6;">${content}</div>
+                <small style="color: #6c757d; display: block; text-align: ${role === 'user' ? 'left' : 'right'}; margin-top: 0.5rem;">
+                    ${new Date().toLocaleTimeString()}
+                </small>
+            `;
+            
+            chatMessages.appendChild(msgDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+        
+        messageInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+        
+        sendBtn.addEventListener('click', sendMessage);
+    });
+</script>
+'''
+
+SETTINGS_TEMPLATE = '''
+<div style="background: white; padding: 2rem; border-radius: 12px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);">
+    <h2 style="margin-bottom: 1.5rem;">الإعدادات</h2>
+    <form>
+        <div style="margin-bottom: 1.5rem;">
+            <label style="display: block; margin-bottom: 0.5rem;">الاسم</label>
+            <input type="text" value="{{ user_name }}" style="width: 100%; max-width: 400px; padding: 0.75rem; border: 1px solid #ddd; border-radius: 8px;">
+        </div>
+        <div style="margin-bottom: 1.5rem;">
+            <label style="display: block; margin-bottom: 0.5rem;">البريد الإلكتروني</label>
+            <input type="email" value="{{ user_email }}" style="width: 100%; max-width: 400px; padding: 0.75rem; border: 1px solid #ddd; border-radius: 8px;">
+        </div>
+        <button type="submit" class="btn btn-primary">حفظ التغييرات</button>
+    </form>
+</div>
+'''
+
+NOT_FOUND_TEMPLATE = '''
+<div style="text-align: center; padding: 4rem 0;">
+    <h1 style="font-size: 3rem; margin-bottom: 1rem;">404</h1>
+    <p style="font-size: 1.25rem; margin-bottom: 2rem;">الصفحة التي تبحث عنها غير موجودة</p>
+    <a href="/" class="btn btn-primary">العودة إلى الصفحة الرئيسية</a>
+</div>
+'''
 
 # ==============================================
 # مسارات الويب
@@ -187,637 +580,206 @@ def handle_command(sender_id, user_id, command):
 
 @app.route('/')
 def home():
-    return """
-    <!DOCTYPE html>
-    <html lang="ar" dir="rtl">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>OTH IA - الذكاء الاصطناعي المتقدم</title>
-        <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&display=swap" rel="stylesheet">
-        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-        <style>
-            :root {
-                --primary-color: #6C63FF;
-                --secondary-color: #4D44DB;
-                --accent-color: #FF6584;
-                --dark-color: #2D3748;
-                --light-color: #F7FAFC;
-            }
-            body {
-                font-family: 'Tajawal', sans-serif;
-                margin: 0;
-                padding: 0;
-                background-color: #f5f7fa;
-                color: var(--dark-color);
-                direction: rtl;
-            }
-            .navbar {
-                background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
-                color: white;
-                padding: 1rem 2rem;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-            }
-            .btn {
-                padding: 0.75rem 1.5rem;
-                background-color: var(--primary-color);
-                color: white;
-                border: none;
-                border-radius: 8px;
-                text-decoration: none;
-                transition: all 0.3s ease;
-            }
-            .btn:hover {
-                background-color: var(--secondary-color);
-            }
-        </style>
-    </head>
-    <body>
-        <nav class="navbar">
-            <a href="/" style="color: white; text-decoration: none; font-size: 1.5rem; font-weight: 700;">OTH IA</a>
-            <div>
-                <a href="/login" class="btn">تسجيل الدخول</a>
-                <a href="/register" class="btn" style="margin-right: 1rem;">إنشاء حساب</a>
-            </div>
-        </nav>
-        <div style="padding: 2rem; text-align: center;">
-            <h1>مرحباً بك في OTH IA</h1>
-            <p>منصة الذكاء الاصطناعي المتقدم للدردشة وتحليل الصور</p>
-        </div>
-    </body>
-    </html>
-    """
+    return render_template('index.html')
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        username = request.form.get('username', '').strip()
+        email = request.form.get('email', '').strip()
         password = request.form.get('password', '').strip()
-        
-        with data_lock:
-            user = users.get(username)
-            if user and check_password_hash(user['password'], password):
+        remember = request.form.get('remember') == 'on'
+
+        with db_lock:
+            user = next((u for u in users_db.values() if u['email'] == email), None)
+            if user and check_password(user['password'], password):
                 session['user_id'] = user['id']
-                session['username'] = username
-                session['session_id'] = str(uuid.uuid4())
-                session.permanent = True
+                session['user_name'] = user['name']
+                session['user_email'] = user['email']
+                session.permanent = remember
                 
-                if user['id'] not in conversations:
-                    conversations[user['id']] = {
-                        "history": ["بدأ المستخدم محادثة جديدة"],
-                        "last_active": time.time()
-                    }
-                else:
-                    conversations[user['id']]["last_active"] = time.time()
+                if user['id'] not in conversations_db:
+                    save_conversation(user['id'], [{
+                        'role': 'ai',
+                        'content': 'مرحباً بك في OTH AI! كيف يمكنني مساعدتك اليوم؟',
+                        'timestamp': time.time()
+                    }])
                 
                 flash('تم تسجيل الدخول بنجاح!', 'success')
-                return redirect(url_for('chat'))
+                return redirect(url_for('dashboard'))
             else:
-                flash('اسم المستخدم أو كلمة المرور غير صحيحة', 'danger')
+                flash('البريد الإلكتروني أو كلمة المرور غير صحيحة', 'danger')
     
-    return """
-    <!DOCTYPE html>
-    <html lang="ar" dir="rtl">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>تسجيل الدخول - OTH IA</title>
-        <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&display=swap" rel="stylesheet">
-        <style>
-            body {
-                font-family: 'Tajawal', sans-serif;
-                background-color: #f5f7fa;
-                direction: rtl;
-                padding: 2rem;
-            }
-            .auth-container {
-                max-width: 400px;
-                margin: 2rem auto;
-                background: white;
-                padding: 2rem;
-                border-radius: 12px;
-                box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
-            }
-            .form-group {
-                margin-bottom: 1.5rem;
-            }
-            input {
-                width: 100%;
-                padding: 0.75rem;
-                border: 1px solid #ddd;
-                border-radius: 8px;
-            }
-            button {
-                width: 100%;
-                padding: 0.75rem;
-                background-color: #6C63FF;
-                color: white;
-                border: none;
-                border-radius: 8px;
-                cursor: pointer;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="auth-container">
-            <h2 style="text-align: center; margin-bottom: 1.5rem;">تسجيل الدخول</h2>
-            <form action="/login" method="POST">
-                <div class="form-group">
-                    <label>اسم المستخدم</label>
-                    <input type="text" name="username" required>
-                </div>
-                <div class="form-group">
-                    <label>كلمة المرور</label>
-                    <input type="password" name="password" required>
-                </div>
-                <button type="submit">تسجيل الدخول</button>
-            </form>
-            <div style="text-align: center; margin-top: 1.5rem;">
-                ليس لديك حساب؟ <a href="/register">إنشاء حساب جديد</a>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
+    return render_template('auth/login.html')
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
-        username = request.form.get('username', '').strip()
+        name = request.form.get('name', '').strip()
+        email = request.form.get('email', '').strip()
         password = request.form.get('password', '').strip()
-        confirm_password = request.form.get('confirm_password', '').strip()
-        
-        if len(username) < 4:
-            flash('اسم المستخدم يجب أن يكون 4 أحرف على الأقل', 'danger')
-        elif len(password) < 6:
-            flash('كلمة المرور يجب أن تكون 6 أحرف على الأقل', 'danger')
-        elif password != confirm_password:
+        confirm = request.form.get('confirm_password', '').strip()
+
+        if len(name) < 3:
+            flash('الاسم يجب أن يكون 3 أحرف على الأقل', 'danger')
+        elif len(password) < 8:
+            flash('كلمة المرور يجب أن تكون 8 أحرف على الأقل', 'danger')
+        elif password != confirm:
             flash('كلمتا المرور غير متطابقتين', 'danger')
         else:
-            with data_lock:
-                if username in users:
-                    flash('اسم المستخدم موجود بالفعل', 'danger')
+            with db_lock:
+                if any(u['email'] == email for u in users_db.values()):
+                    flash('هذا البريد الإلكتروني مستخدم بالفعل', 'danger')
                 else:
-                    user_id = str(uuid.uuid4())
-                    users[username] = {
+                    user_id = generate_user_id()
+                    users_db[user_id] = {
                         'id': user_id,
-                        'username': username,
-                        'password': generate_password_hash(password),
-                        'created_at': time.time()
+                        'name': name,
+                        'email': email,
+                        'password': hash_password(password),
+                        'created_at': time.time(),
+                        'last_login': time.time()
                     }
                     
-                    conversations[user_id] = {
-                        "history": ["بدأ المستخدم محادثة جديدة"],
-                        "last_active": time.time()
-                    }
+                    save_conversation(user_id, [{
+                        'role': 'ai',
+                        'content': 'مرحباً بك في OTH AI! كيف يمكنني مساعدتك اليوم؟',
+                        'timestamp': time.time()
+                    }])
                     
-                    flash('تم إنشاء الحساب بنجاح! يمكنك تسجيل الدخول الآن', 'success')
+                    flash('تم إنشاء الحساب بنجاح! يرجى تسجيل الدخول', 'success')
                     return redirect(url_for('login'))
     
-    return """
-    <!DOCTYPE html>
-    <html lang="ar" dir="rtl">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>إنشاء حساب - OTH IA</title>
-        <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&display=swap" rel="stylesheet">
-        <style>
-            body {
-                font-family: 'Tajawal', sans-serif;
-                background-color: #f5f7fa;
-                direction: rtl;
-                padding: 2rem;
-            }
-            .auth-container {
-                max-width: 400px;
-                margin: 2rem auto;
-                background: white;
-                padding: 2rem;
-                border-radius: 12px;
-                box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
-            }
-            .form-group {
-                margin-bottom: 1.5rem;
-            }
-            input {
-                width: 100%;
-                padding: 0.75rem;
-                border: 1px solid #ddd;
-                border-radius: 8px;
-            }
-            button {
-                width: 100%;
-                padding: 0.75rem;
-                background-color: #6C63FF;
-                color: white;
-                border: none;
-                border-radius: 8px;
-                cursor: pointer;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="auth-container">
-            <h2 style="text-align: center; margin-bottom: 1.5rem;">إنشاء حساب جديد</h2>
-            <form action="/register" method="POST">
-                <div class="form-group">
-                    <label>اسم المستخدم</label>
-                    <input type="text" name="username" required minlength="4">
-                    <small style="color: #666;">يجب أن يكون 4 أحرف على الأقل</small>
-                </div>
-                <div class="form-group">
-                    <label>كلمة المرور</label>
-                    <input type="password" name="password" required minlength="6">
-                    <small style="color: #666;">يجب أن تكون 6 أحرف على الأقل</small>
-                </div>
-                <div class="form-group">
-                    <label>تأكيد كلمة المرور</label>
-                    <input type="password" name="confirm_password" required>
-                </div>
-                <button type="submit">إنشاء حساب</button>
-            </form>
-            <div style="text-align: center; margin-top: 1.5rem;">
-                لديك حساب بالفعل؟ <a href="/login">تسجيل الدخول</a>
-            </div>
-        </div>
-    </body>
-    </html>
-    """
+    return render_template('auth/register.html')
 
 @app.route('/logout')
 @login_required
 def logout():
-    user_id = session.get('user_id')
-    with data_lock:
-        if user_id in conversations:
-            del conversations[user_id]
-    
     session.clear()
     flash('تم تسجيل الخروج بنجاح', 'info')
     return redirect(url_for('home'))
 
+@app.route('/dashboard')
+@login_required
+def dashboard():
+    conv = get_conversation(session['user_id'])
+    return render_template('dashboard/index.html', 
+                         user_name=session['user_name'],
+                         user_email=session['user_email'],
+                         conversation=conv['messages'])
+
 @app.route('/chat')
 @login_required
 def chat():
-    return """
-    <!DOCTYPE html>
-    <html lang="ar" dir="rtl">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>الدردشة - OTH IA</title>
-        <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&display=swap" rel="stylesheet">
-        <style>
-            body {
-                font-family: 'Tajawal', sans-serif;
-                margin: 0;
-                padding: 0;
-                background-color: #f5f7fa;
-            }
-            .chat-container {
-                display: flex;
-                flex-direction: column;
-                height: 100vh;
-            }
-            .chat-header {
-                background: linear-gradient(135deg, #6C63FF, #4D44DB);
-                color: white;
-                padding: 1rem;
-                text-align: center;
-            }
-            .chat-messages {
-                flex: 1;
-                padding: 1rem;
-                overflow-y: auto;
-                background-color: #f9f9f9;
-            }
-            .message {
-                margin-bottom: 1rem;
-                padding: 0.75rem 1rem;
-                border-radius: 12px;
-                max-width: 80%;
-            }
-            .user-message {
-                background-color: #e3f2fd;
-                margin-left: auto;
-            }
-            .bot-message {
-                background-color: #f1f1f1;
-                margin-right: auto;
-            }
-            .chat-input {
-                display: flex;
-                padding: 1rem;
-                background-color: white;
-                border-top: 1px solid #eee;
-            }
-            .chat-input input {
-                flex: 1;
-                padding: 0.75rem;
-                border: 1px solid #ddd;
-                border-radius: 8px;
-            }
-            .chat-input button {
-                margin-right: 0.5rem;
-                padding: 0.75rem 1.5rem;
-                background-color: #6C63FF;
-                color: white;
-                border: none;
-                border-radius: 8px;
-                cursor: pointer;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="chat-container">
-            <div class="chat-header">
-                <h3>OTH IA - الدردشة</h3>
-            </div>
-            <div class="chat-messages" id="chat-messages">
-                <!-- سيتم ملء المحادثة بواسطة JavaScript -->
-            </div>
-            <div class="chat-input">
-                <input type="text" id="user-input" placeholder="اكتب رسالتك هنا..." autocomplete="off">
-                <button id="send-btn">إرسال</button>
-            </div>
-        </div>
-        <script>
-            document.addEventListener('DOMContentLoaded', function() {
-                const chatMessages = document.getElementById('chat-messages');
-                const userInput = document.getElementById('user-input');
-                const sendBtn = document.getElementById('send-btn');
-                
-                function sendMessage() {
-                    const message = userInput.value.trim();
-                    if (!message) return;
-                    
-                    addMessage(message, 'user');
-                    userInput.value = '';
-                    
-                    fetch('/api/chat', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify({ message: message })
-                    })
-                    .then(response => response.json())
-                    .then(data => {
-                        if (data.error) {
-                            addMessage('حدث خطأ: ' + data.error, 'bot');
-                        } else {
-                            addMessage(data.reply, 'bot');
-                        }
-                    })
-                    .catch(error => {
-                        addMessage('حدث خطأ في الاتصال بالخادم', 'bot');
-                    });
-                }
-                
-                function addMessage(text, sender) {
-                    const messageDiv = document.createElement('div');
-                    messageDiv.className = `message ${sender}-message`;
-                    messageDiv.textContent = text;
-                    chatMessages.appendChild(messageDiv);
-                    chatMessages.scrollTop = chatMessages.scrollHeight;
-                }
-                
-                userInput.addEventListener('keypress', function(e) {
-                    if (e.key === 'Enter') {
-                        sendMessage();
-                    }
-                });
-                
-                sendBtn.addEventListener('click', sendMessage);
-                
-                // تحميل المحادثة السابقة
-                fetch('/api/conversation')
-                    .then(response => response.json())
-                    .then(data => {
-                        if (data.history && data.history.length > 0) {
-                            data.history.forEach(item => {
-                                if (item.startsWith('المستخدم:')) {
-                                    addMessage(item.replace('المستخدم:', '').trim(), 'user');
-                                } else if (item.startsWith('البوت:')) {
-                                    addMessage(item.replace('البوت:', '').trim(), 'bot');
-                                }
-                            });
-                        } else {
-                            addMessage('مرحباً بك في OTH IA! كيف يمكنني مساعدتك اليوم؟', 'bot');
-                        }
-                    });
-            });
-        </script>
-    </body>
-    </html>
-    """
+    conv = get_conversation(session['user_id'])
+    return render_template('dashboard/chat.html',
+                         user_name=session['user_name'],
+                         user_email=session['user_email'],
+                         conversation=conv['messages'])
+
+@app.route('/settings')
+@login_required
+def settings():
+    return render_template('dashboard/settings.html',
+                         user_name=session['user_name'],
+                         user_email=session['user_email'])
 
 @app.route('/api/chat', methods=['POST'])
 @login_required
-def api_chat():
-    if 'user_id' not in session:
-        return jsonify({"error": "غير مصرح به"}), 401
-    
-    try:
-        data = request.json
-        user_message = data.get('message', '').strip()
-        
-        if not user_message:
-            return jsonify({"error": "الرجاء إدخال رسالة صالحة"}), 400
-        
-        user_id = session['user_id']
-        
-        with data_lock:
-            if user_id not in conversations:
-                conversations[user_id] = {
-                    "history": ["بدأ المستخدم محادثة جديدة"],
-                    "last_active": time.time()
-                }
+def chat_api():
+    user_id = session['user_id']
+    data = request.json
+    message = data.get('message', '').strip()
+    attachment = data.get('attachment')
+
+    if not message and not attachment:
+        return jsonify({'error': 'الرسالة لا يمكن أن تكون فارغة'}), 400
+
+    conv = get_conversation(user_id)
+    messages = conv['messages']
+
+    user_msg = {
+        'role': 'user',
+        'content': message,
+        'timestamp': time.time()
+    }
+    messages.append(user_msg)
+
+    ai_response = None
+    if attachment and attachment.get('type') == 'image':
+        try:
+            img_url = attachment['url']
+            img_path = download_image(img_url)
             
-            conversations[user_id]["last_active"] = time.time()
-            conversations[user_id]["history"].append(f"المستخدم: {user_message}")
+            if img_path:
+                img = genai.upload_file(img_path)
+                response = model.generate_content(["حلل هذه الصورة بدقة:", img])
+                ai_response = format_ai_response(response.text)
+                
+                if os.path.exists(img_path):
+                    os.unlink(img_path)
+        except Exception as e:
+            logger.error(f"خطأ في معالجة الصورة: {str(e)}")
+            ai_response = "⚠️ حدث خطأ أثناء معالجة الصورة"
+
+    if not ai_response:
+        try:
+            context = "\n".join(
+                f"{msg['role']}: {msg['content']}" 
+                for msg in messages[-10:]
+            )
             
-            context = "\n".join(conversations[user_id]["history"][-5:])
-            prompt = f"{context}\n\nالسؤال: {user_message}" if context else user_message
+            prompt = f"سياق المحادثة:\n{context}\n\nuser: {message}"
             response = model.generate_content(prompt)
-            reply = format_response(response.text)
-            
-            conversations[user_id]["history"].append(f"البوت: {reply}")
-            
-            return jsonify({
-                "reply": reply,
-                "conversation_id": user_id,
-                "timestamp": int(time.time())
-            }), 200
-            
-    except Exception as e:
-        logger.error(f"خطأ في واجهة الدردشة: {str(e)}")
-        return jsonify({"error": "حدث خطأ أثناء معالجة طلبك"}), 500
+            ai_response = format_ai_response(response.text)
+        except Exception as e:
+            logger.error(f"خطأ في نموذج الذكاء الاصطناعي: {str(e)}")
+            ai_response = "⚠️ حدث خطأ أثناء معالجة طلبك"
 
-@app.route('/api/conversation', methods=['GET'])
-@login_required
-def get_conversation():
-    user_id = session.get('user_id')
-    if not user_id:
-        return jsonify({"error": "غير مصرح به"}), 401
-    
-    with data_lock:
-        if user_id in conversations:
-            return jsonify({
-                "history": conversations[user_id]["history"],
-                "last_active": conversations[user_id]["last_active"]
-            }), 200
-        return jsonify({"history": []}), 200
+    ai_msg = {
+        'role': 'ai',
+        'content': ai_response,
+        'timestamp': time.time()
+    }
+    messages.append(ai_msg)
 
-# ==============================================
-# مسارات بوت الماسنجر
-# ==============================================
+    save_conversation(user_id, messages)
 
-@app.route('/webhook', methods=['GET', 'POST'])
-def webhook():
-    if request.method == 'GET':
-        verify_token = request.args.get('hub.verify_token')
-        if verify_token == VERIFY_TOKEN:
-            setup_messenger_profile()
-            return request.args.get('hub.challenge')
-        return "فشل التحقق", 403
-    
-    data = request.get_json()
-    try:
-        for entry in data.get('entry', []):
-            for event in entry.get('messaging', []):
-                sender_id = event['sender']['id']
-                user_id = get_user_id(sender_id)
-                current_time = time.time()
-                
-                cleanup_old_conversations()
-                
-                if 'postback' in event:
-                    handle_command(sender_id, user_id, event['postback']['payload'])
-                    continue
-                    
-                if 'message' in event:
-                    message = event['message']
-                    
-                    with data_lock:
-                        if user_id not in conversations:
-                            conversations[user_id] = {
-                                "history": ["بدأ المستخدم محادثة جديدة"],
-                                "last_active": current_time
-                            }
-                            send_message(sender_id, "مرحباً بك في بوت OTH IA! 💎\n\nيمكنك إرسال أي سؤال أو صورة وسأساعدك.")
-                        
-                        conversations[user_id]["last_active"] = current_time
-                        
-                        if 'attachments' in message:
-                            for attachment in message['attachments']:
-                                if attachment['type'] == 'image':
-                                    send_message(sender_id, "⏳ جاري تحليل الصورة...")
-                                    image_url = attachment['payload']['url']
-                                    image_path = download_image(image_url)
-                                    
-                                    if image_path:
-                                        context = "\n".join(conversations[user_id]["history"][-5:])
-                                        analysis = analyze_image(image_path, context)
-                                        
-                                        if analysis:
-                                            conversations[user_id]["history"].append(f"صورة: {analysis[:200]}...")
-                                            send_message(sender_id, f"📸 تحليل الصورة:\n\n{analysis}")
-                                        else:
-                                            send_message(sender_id, "⚠️ تعذر تحليل الصورة")
-                            continue
-                        
-                        if 'text' in message:
-                            user_message = message['text'].strip()
-                            
-                            if user_message.lower() in ['مساعدة', 'help']:
-                                send_message(sender_id, "🆘 مركز المساعدة:\n\n• اكتب سؤالك مباشرة\n• أرسل صورة لتحليلها\n• /new لبدء محادثة جديدة")
-                            elif user_message.lower() == '/new':
-                                conversations[user_id] = {
-                                    "history": ["بدأ المستخدم محادثة جديدة"],
-                                    "last_active": current_time
-                                }
-                                send_message(sender_id, "تم بدء محادثة جديدة. كيف يمكنني مساعدتك؟")
-                            else:
-                                try:
-                                    context = "\n".join(conversations[user_id]["history"][-5:])
-                                    prompt = f"{context}\n\nالسؤال: {user_message}" if context else user_message
-                                    
-                                    response = model.generate_content(prompt)
-                                    reply = response.text
-                                    
-                                    conversations[user_id]["history"].append(f"المستخدم: {user_message}")
-                                    conversations[user_id]["history"].append(f"البوت: {reply}")
-                                    
-                                    send_message(sender_id, reply)
-                                except Exception as e:
-                                    logger.error(f"خطأ في نموذج الذكاء الاصطناعي: {str(e)}")
-                                    send_message(sender_id, "⚠️ حدث خطأ أثناء المعالجة، يرجى المحاولة لاحقاً")
-    
-    except Exception as e:
-        logger.error(f"خطأ في webhook: {str(e)}")
-    
-    return jsonify({"status": "ok"}), 200
+    return jsonify({
+        'response': ai_response,
+        'conversation_id': user_id
+    })
 
 @app.errorhandler(404)
 def page_not_found(e):
-    return """
-    <!DOCTYPE html>
-    <html lang="ar" dir="rtl">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>الصفحة غير موجودة - OTH IA</title>
-        <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&display=swap" rel="stylesheet">
-        <style>
-            body {
-                font-family: 'Tajawal', sans-serif;
-                background-color: #f5f7fa;
-                direction: rtl;
-                text-align: center;
-                padding: 2rem;
-            }
-            .error-container {
-                max-width: 600px;
-                margin: 2rem auto;
-            }
-            .btn {
-                display: inline-block;
-                padding: 0.75rem 1.5rem;
-                background-color: #6C63FF;
-                color: white;
-                text-decoration: none;
-                border-radius: 8px;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="error-container">
-            <h1>404</h1>
-            <p>الصفحة التي تبحث عنها غير موجودة.</p>
-            <a href="/" class="btn">العودة إلى الصفحة الرئيسية</a>
-        </div>
-    </body>
-    </html>
-    """, 404
+    return render_template('404.html'), 404
 
 # ==============================================
-# التشغيل والصيانة
+# تشغيل التطبيق
 # ==============================================
-
-def periodic_cleanup():
-    while True:
-        time.sleep(3600)
-        cleanup_old_conversations()
 
 if __name__ == '__main__':
-    import threading
-    cleanup_thread = threading.Thread(target=periodic_cleanup)
-    cleanup_thread.daemon = True
-    cleanup_thread.start()
-    
-    setup_messenger_profile()
-    app.run(threaded=True)
+    # بدء خيط تنظيف المحادثات القديمة
+    cleaner = Thread(target=cleanup_old_conversations)
+    cleaner.daemon = True
+    cleaner.start()
+
+    # إنشاء مستخدم افتراضي للاختبار
+    with db_lock:
+        if not users_db:
+            user_id = generate_user_id()
+            users_db[user_id] = {
+                'id': user_id,
+                'name': 'مستخدم تجريبي',
+                'email': 'test@oth.ai',
+                'password': hash_password('password123'),
+                'created_at': time.time(),
+                'last_login': time.time()
+            }
+            
+            save_conversation(user_id, [{
+                'role': 'ai',
+                'content': 'مرحباً بك في OTH AI! كيف يمكنني مساعدتك اليوم؟',
+                'timestamp': time.time()
+            }])
+
+    app.run(debug=True)
