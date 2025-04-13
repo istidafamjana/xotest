@@ -9,6 +9,7 @@ import os
 import hashlib
 import time
 import uuid
+import json
 from datetime import datetime, timedelta
 from threading import Lock
 from functools import wraps
@@ -32,9 +33,30 @@ model = genai.GenerativeModel('gemini-1.5-flash')
 
 # تخزين المحادثات المؤقتة
 conversations = {}
-users = {}  # تخزين مؤقت للمستخدمين
+users_db_file = 'users.json'  # ملف تخزين بيانات المستخدمين
 CONVERSATION_TIMEOUT = 5 * 60 * 60  # 5 ساعات بالثواني
 data_lock = Lock()
+
+# تحميل بيانات المستخدمين من الملف
+def load_users():
+    try:
+        if os.path.exists(users_db_file):
+            with open(users_db_file, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading users: {str(e)}")
+    return {}
+
+# حفظ بيانات المستخدمين إلى الملف
+def save_users(users_data):
+    try:
+        with open(users_db_file, 'w') as f:
+            json.dump(users_data, f, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving users: {str(e)}")
+
+# تحميل بيانات المستخدمين عند بدء التشغيل
+users = load_users()
 
 # ديكورات المسارات
 def login_required(f):
@@ -153,6 +175,14 @@ def cleanup_old_conversations():
 def home():
     return render_template('index.html')
 
+@app.route('/features')
+def features():
+    return render_template('features.html')
+
+@app.route('/about')
+def about():
+    return render_template('about.html')
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
@@ -176,7 +206,7 @@ def login():
                 
                 flash('تم تسجيل الدخول بنجاح!', 'success')
                 next_page = request.args.get('next')
-                return redirect(next_page or url_for('chat'))
+                return redirect(next_page or url_for('dashboard'))
             else:
                 flash('اسم المستخدم أو كلمة المرور غير صحيحة', 'danger')
     
@@ -187,9 +217,14 @@ def register():
     if request.method == 'POST':
         username = request.form['username']
         password = request.form['password']
+        confirm_password = request.form['confirm_password']
         
         if len(username) < 4 or len(password) < 6:
             flash('اسم المستخدم يجب أن يكون 4 أحرف على الأقل وكلمة المرور 6 أحرف', 'danger')
+            return redirect(url_for('register'))
+        
+        if password != confirm_password:
+            flash('كلمة المرور غير متطابقة', 'danger')
             return redirect(url_for('register'))
         
         with data_lock:
@@ -201,8 +236,11 @@ def register():
                     'id': user_id,
                     'username': username,
                     'password': generate_password_hash(password),
-                    'created_at': time.time()
+                    'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 }
+                
+                # حفظ بيانات المستخدمين
+                save_users(users)
                 
                 # إنشاء محادثة جديدة للمستخدم
                 conversations[user_id] = {
@@ -226,6 +264,11 @@ def logout():
     session.clear()
     flash('تم تسجيل الخروج بنجاح', 'info')
     return redirect(url_for('home'))
+
+@app.route('/dashboard')
+@login_required
+def dashboard():
+    return render_template('dashboard.html', username=session.get('username'))
 
 @app.route('/chat')
 @login_required
@@ -277,7 +320,7 @@ def api_chat():
         logger.error(f"API Error: {str(e)}")
         return jsonify({"reply": "حدث خطأ أثناء معالجة طلبك"}), 500
 
-# مسارات البوت
+# مسارات البوت (Facebook Messenger)
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
     if request.method == 'GET':
