@@ -27,16 +27,15 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('OTH_AI')
 
-# API Tokens
-GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"
+# API Tokens (استبدل هذه بالقيم الفعلية من متغيرات البيئة)
 PAGE_ACCESS_TOKEN = "EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD"
 VERIFY_TOKEN = "d51ee4e3183dbbd9a27b7d2c1af8c655"
-
+GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"
 # Initialize Gemini AI
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
-# Database simulation
+# Database simulation (في الإنتاج استخدم قاعدة بيانات حقيقية)
 users_db = {
     "admin": {
         "id": str(uuid.uuid4()),
@@ -49,7 +48,7 @@ users_db = {
 conversations_db = {}
 user_conversations = {}
 
-# Conversation history storage (5 hours retention)
+# تنظيف المحادثات القديمة (أكثر من 5 ساعات)
 def cleanup_old_conversations():
     now = datetime.now()
     for user_id, convs in list(user_conversations.items()):
@@ -58,7 +57,7 @@ def cleanup_old_conversations():
             if now - conv['created_at'] < timedelta(hours=5)
         ]
 
-# Modern Arabic UI with Night Theme
+# قالب HTML الأساسي مع التصميم الليلي
 def base_template(content, user=None, active_tab='chat'):
     nav_links = """
     <div class="nav-links">
@@ -318,7 +317,7 @@ def base_template(content, user=None, active_tab='chat'):
             max-width: 100%;
             border-radius: 8px;
             margin-top: 10px;
-        }
+        }}
         
         .message-file {{
             display: inline-block;
@@ -326,7 +325,7 @@ def base_template(content, user=None, active_tab='chat'):
             background-color: rgba(255, 255, 255, 0.1);
             border-radius: 8px;
             margin-top: 8px;
-        }
+        }}
         
         .chat-input-container {{
             padding: 15px;
@@ -1083,7 +1082,7 @@ def webhook():
                                 ])
                                 
                                 requests.post(
-                                    f"https://graph.facebook.com/v17.0/me/messages?access_token={PAGE_ACCESS_TOKEN}",
+                                    f"https://graph.facebook.com/v22.0/me/messages?access_token={PAGE_ACCESS_TOKEN}",
                                     json={
                                         'recipient': {'id': sender_id},
                                         'message': {'text': ai_response.text}
@@ -1095,4 +1094,4 @@ def webhook():
     return jsonify({'status': 'ok'}), 200
 
 if __name__ == '__main__':
-    app.run()
+    app.run(debug=True)
