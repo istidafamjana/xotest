@@ -1,8 +1,8 @@
-flask
-google-generativeai
-pdfplumber
-python-docx 
-Pillow
-arabic-reshaper
-python-bidi
-flask-limiter
+Flask==2.3.2
+Werkzeug==2.3.7
+google-generativeai==0.3.2
+python-dotenv==1.0.0
+Pillow==10.0.1
+python-dateutil==2.8.2
+pytz==2023.3
+requests==2.31.0
