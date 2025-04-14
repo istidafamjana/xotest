@@ -1,10 +1,5 @@
 flask
-werkzeug
 requests
 google-generativeai
-python-dotenv
-pillow
-pytesseract
-pdf2image
-python-docx
-openpyxl
+langid
+urllib3
