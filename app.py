@@ -1,478 +1,665 @@
-from flask import Flask, request, jsonify, render_template_string, redirect, url_for, session, flash
-from werkzeug.security import generate_password_hash, check_password_hash
-import google.generativeai as genai
 import os
-import uuid
 import json
+import hashlib
+import uuid
 import time
-from datetime import datetime
-from threading import Lock
-import requests
+from datetime import datetime, timedelta
+from threading import Lock, Thread
+from functools import wraps
 import tempfile
 import urllib.request
-from PIL import Image
-import io
-import base64
 import logging
+from flask import Flask, request, jsonify, render_template_string, redirect, url_for, session, flash
+from werkzeug.security import generate_password_hash, check_password_hash
+import requests
+import google.generativeai as genai
 
-# إعدادات السجل
+# تكوين التطبيق الأساسي
+app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-123')
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=5)
+
+# تكوين السجلات
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
-app.secret_key = 'your-secret-key-123'  # تغيير هذا في الإنتاج
-app.config['PERMANENT_SESSION_LIFETIME'] = 3600 * 5  # 5 ساعات
-
-# التوكنات المضمنة مباشرة (للتطوير فقط)
+# التوكنات والمفاتيح (ابقاء جزء فيسبوك كما هو)
+PAGE_ACCESS_TOKEN = "EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD"
+VERIFY_TOKEN = "d51ee4e3183dbbd9a27b7d2c1af8c655"
 GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"
-FB_PAGE_TOKEN = "EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD"
-FB_VERIFY_TOKEN = "d51ee4e3183dbbd9a27b7d2c1af8c655"
 
 # تهيئة نموذج Gemini
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
 # تخزين البيانات
-users = {}
+DATA_FILE = "users_data.json"
 conversations = {}
-db_lock = Lock()
+users = {}
+CONVERSATION_TIMEOUT = 5 * 60 * 60  # 5 ساعات بالثواني
+data_lock = Lock()
 
-## ====== تصميم الموقع ======
-BASE_HTML = """
+# تعريف القوالب المضمنة
+TEMPLATES = {
+    'index.html': '''
 <!DOCTYPE html>
-<html lang="ar" dir="rtl">
+<html dir="rtl" lang="ar">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{title} - Gemini AI</title>
-    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&display=swap" rel="stylesheet">
-    <script src="https://cdn.tailwindcss.com"></script>
+    <title>OTH AI - منصة الذكاء الاصطناعي</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        :root {{
-            --primary: #6366f1;
-            --primary-dark: #4f46e5;
-            --dark: #1e293b;
-            --light: #f8fafc;
-        }}
-        body {{
-            font-family: 'Tajawal', sans-serif;
-            background-color: var(--light);
-            color: var(--dark);
-            transition: all 0.3s;
-        }}
-        body.dark {{
-            background-color: #0f172a;
-            color: #e2e8f0;
-        }}
-        .gradient-bg {{
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        }}
-        .glow {{
-            animation: glow 2s infinite alternate;
-        }}
-        @keyframes glow {{
-            from {{
-                box-shadow: 0 0 5px rgba(99, 102, 241, 0.5);
-            }}
-            to {{
-                box-shadow: 0 0 20px rgba(99, 102, 241, 0.8);
-            }}
-        }}
-        .message-user {{
-            background: var(--primary);
-            color: white;
-            border-radius: 1rem 1rem 0 1rem;
-        }}
-        .message-bot {{
-            background: #e2e8f0;
-            color: var(--dark);
-            border-radius: 1rem 1rem 1rem 0;
-        }}
-        .dark .message-bot {{
-            background: #334155;
-            color: #e2e8f0;
-        }}
-        .file-upload {{
-            display: none;
-        }}
-        .file-upload-label {{
-            cursor: pointer;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            padding: 0.5rem 1rem;
-            background-color: #e2e8f0;
-            border-radius: 0.5rem;
-            margin-left: 0.5rem;
-        }}
-        .file-upload-label:hover {{
-            background-color: #cbd5e1;
-        }}
+        body { background-color: #f8f9fa; }
+        .hero-section { background: linear-gradient(135deg, #6e8efb, #a777e3); }
+        .feature-icon { font-size: 2rem; color: #6e8efb; }
     </style>
 </head>
-<body class="{dark_mode}">
-    <!-- إضاءات خلفية -->
-    <div class="fixed -z-10 inset-0 overflow-hidden">
-        <div class="absolute top-0 left-1/4 w-32 h-32 rounded-full bg-purple-500 opacity-20 blur-3xl"></div>
-        <div class="absolute bottom-0 right-1/4 w-64 h-64 rounded-full bg-indigo-500 opacity-20 blur-3xl"></div>
-    </div>
-
-    <div class="min-h-screen flex flex-col">
-        <nav class="bg-white/80 dark:bg-slate-800/80 backdrop-blur-md border-b border-gray-200 dark:border-slate-700">
-            <div class="max-w-6xl mx-auto px-4 py-3 flex justify-between items-center">
-                <a href="/" class="flex items-center space-x-2">
-                    <div class="w-8 h-8 gradient-bg rounded-full flex items-center justify-center text-white font-bold">G</div>
-                    <span class="text-xl font-bold bg-gradient-to-r from-indigo-500 to-purple-500 bg-clip-text text-transparent">Gemini AI</span>
-                </a>
-                <div class="flex items-center space-x-4">
-                    <button id="theme-toggle" class="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-slate-700">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-gray-700 dark:text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
-                        </svg>
-                    </button>
-                    {auth_buttons}
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="/">OTH AI</a>
+            <div class="collapse navbar-collapse">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item"><a class="nav-link" href="/chat">المحادثة</a></li>
+                </ul>
+                <div class="d-flex">
+                    {% if 'user_id' in session %}
+                        <a href="/logout" class="btn btn-outline-light">تسجيل الخروج</a>
+                    {% else %}
+                        <a href="/login" class="btn btn-outline-light me-2">تسجيل الدخول</a>
+                        <a href="/register" class="btn btn-primary">إنشاء حساب</a>
+                    {% endif %}
                 </div>
             </div>
-        </nav>
+        </div>
+    </nav>
 
-        <main class="flex-grow max-w-6xl mx-auto px-4 py-8 w-full">
-            {flashes}
-            {content}
-        </main>
+    <section class="hero-section text-white py-5">
+        <div class="container py-5 text-center">
+            <h1 class="display-4 fw-bold">منصة الذكاء الاصطناعي OTH</h1>
+            <p class="lead">تجربة محادثة متقدمة مع Gemini 1.5 Flash</p>
+            {% if 'user_id' not in session %}
+                <a href="/register" class="btn btn-light btn-lg mt-3">ابدأ الآن</a>
+            {% else %}
+                <a href="/chat" class="btn btn-light btn-lg mt-3">اذهب إلى المحادثة</a>
+            {% endif %}
+        </div>
+    </section>
 
-        <footer class="bg-white/80 dark:bg-slate-800/80 backdrop-blur-md border-t border-gray-200 dark:border-slate-700 py-4">
-            <div class="max-w-6xl mx-auto px-4 text-center text-sm text-gray-600 dark:text-gray-400">
-                © {year} Gemini AI. جميع الحقوق محفوظة.
+    <div class="container py-5">
+        <div class="row g-4">
+            <div class="col-md-4">
+                <div class="card h-100">
+                    <div class="card-body text-center">
+                        <div class="feature-icon mb-3">💎</div>
+                        <h3>ذكاء اصطناعي متقدم</h3>
+                        <p>محادثات ذكية مع نموذج Gemini 1.5 Flash من جوجل</p>
+                    </div>
+                </div>
             </div>
-        </footer>
+            <div class="col-md-4">
+                <div class="card h-100">
+                    <div class="card-body text-center">
+                        <div class="feature-icon mb-3">📸</div>
+                        <h3>تحليل الصور</h3>
+                        <p>فهم وتحليل الصور والمحتوى المرئي</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card h-100">
+                    <div class="card-body text-center">
+                        <div class="feature-icon mb-3">🔒</div>
+                        <h3>آمن وسري</h3>
+                        <p>نظام تسجيل دخول آمن وحماية البيانات</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer class="bg-dark text-white py-4">
+        <div class="container text-center">
+            <p>© 2023 OTH AI. جميع الحقوق محفوظة.</p>
+        </div>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+    ''',
+    
+    'login.html': '''
+<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>تسجيل الدخول - OTH AI</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f8f9fa; }
+        .login-card { max-width: 500px; margin: 0 auto; border-radius: 10px; }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="/">OTH AI</a>
+        </div>
+    </nav>
+
+    <div class="container py-5">
+        <div class="login-card card shadow">
+            <div class="card-body p-5">
+                <h2 class="card-title text-center mb-4">تسجيل الدخول</h2>
+                
+                {% with messages = get_flashed_messages(with_categories=true) %}
+                    {% if messages %}
+                        {% for category, message in messages %}
+                            <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                                {{ message }}
+                                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                            </div>
+                        {% endfor %}
+                    {% endif %}
+                {% endwith %}
+                
+                <form method="POST" action="/login">
+                    <input type="hidden" name="next" value="{{ request.args.get('next', '') }}">
+                    
+                    <div class="mb-3">
+                        <label for="username" class="form-label">اسم المستخدم</label>
+                        <input type="text" class="form-control" id="username" name="username" required>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <label for="password" class="form-label">كلمة المرور</label>
+                        <input type="password" class="form-control" id="password" name="password" required>
+                    </div>
+                    
+                    <button type="submit" class="btn btn-primary w-100 py-2">تسجيل الدخول</button>
+                </form>
+                
+                <div class="text-center mt-3">
+                    <p>ليس لديك حساب؟ <a href="/register">إنشاء حساب جديد</a></p>
+                    <p><a href="/">العودة للصفحة الرئيسية</a></p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+    ''',
+    
+    'register.html': '''
+<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>إنشاء حساب - OTH AI</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f8f9fa; }
+        .register-card { max-width: 500px; margin: 0 auto; border-radius: 10px; }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="/">OTH AI</a>
+        </div>
+    </nav>
+
+    <div class="container py-5">
+        <div class="register-card card shadow">
+            <div class="card-body p-5">
+                <h2 class="card-title text-center mb-4">إنشاء حساب جديد</h2>
+                
+                {% with messages = get_flashed_messages(with_categories=true) %}
+                    {% if messages %}
+                        {% for category, message in messages %}
+                            <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                                {{ message }}
+                                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                            </div>
+                        {% endfor %}
+                    {% endif %}
+                {% endwith %}
+                
+                <form method="POST" action="/register">
+                    <div class="mb-3">
+                        <label for="username" class="form-label">اسم المستخدم</label>
+                        <input type="text" class="form-control" id="username" name="username" required>
+                        <div class="form-text">يجب أن يكون 4 أحرف على الأقل</div>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <label for="password" class="form-label">كلمة المرور</label>
+                        <input type="password" class="form-control" id="password" name="password" required>
+                        <div class="form-text">يجب أن تكون 6 أحرف على الأقل</div>
+                    </div>
+                    
+                    <button type="submit" class="btn btn-primary w-100 py-2">إنشاء حساب</button>
+                </form>
+                
+                <div class="text-center mt-3">
+                    <p>لديك حساب بالفعل؟ <a href="/login">تسجيل الدخول</a></p>
+                    <p><a href="/">العودة للصفحة الرئيسية</a></p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+    ''',
+    
+    'chat.html': '''
+<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>المحادثة - OTH AI</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f8f9fa; }
+        .chat-container { max-width: 800px; margin: 0 auto; border-radius: 10px; }
+        .chat-messages { height: 500px; overflow-y: auto; }
+        .message { max-width: 80%; margin-bottom: 10px; }
+        .user-message { margin-left: auto; background-color: #e3f2fd; }
+        .bot-message { margin-right: auto; background-color: #f1f1f1; }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="/">OTH AI</a>
+            <div class="d-flex">
+                <a href="/logout" class="btn btn-outline-light">تسجيل الخروج</a>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container py-4">
+        <div class="chat-container card shadow">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0">محادثة مع OTH AI</h5>
+            </div>
+            
+            <div class="card-body">
+                <div id="chat-messages" class="chat-messages mb-3 p-3">
+                    <!-- سيتم ملء الرسائل هنا عبر JavaScript -->
+                </div>
+                
+                <form id="chat-form" class="d-flex">
+                    <input type="text" id="user-input" class="form-control me-2" placeholder="اكتب رسالتك هنا..." required>
+                    <button type="submit" class="btn btn-primary">إرسال</button>
+                </form>
+            </div>
+        </div>
     </div>
 
     <script>
-        // تبديل الوضع الليلي
-        const themeToggle = document.getElementById('theme-toggle');
-        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        const currentTheme = localStorage.getItem('theme') || (prefersDark ? 'dark' : 'light');
-        
-        if (currentTheme === 'dark') document.body.classList.add('dark');
-        
-        themeToggle.addEventListener('click', () => {
-            document.body.classList.toggle('dark');
-            const theme = document.body.classList.contains('dark') ? 'dark' : 'light';
-            localStorage.setItem('theme', theme);
-        });
-
-        // تأثيرات الإضاءة للعناصر
-        document.querySelectorAll('.glow-on-hover').forEach(el => {
-            el.addEventListener('mouseenter', () => {
-                el.classList.add('glow');
-            });
-            el.addEventListener('mouseleave', () => {
-                el.classList.remove('glow');
-            });
-        });
-    </script>
-    {additional_js}
-</body>
-</html>
-"""
-
-CHAT_CONTENT = """
-<div class="flex flex-col h-full">
-    <div class="flex justify-between items-center mb-6">
-        <h1 class="text-2xl font-bold text-indigo-600 dark:text-indigo-400">محادثة Gemini</h1>
-        <button id="new-chat" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm transition-all">
-            محادثة جديدة
-        </button>
-    </div>
-    
-    <div id="chat-container" class="flex-grow space-y-4 mb-6 overflow-y-auto max-h-[70vh] p-2">
-        {messages}
-    </div>
-    
-    <div class="sticky bottom-0 bg-white/80 dark:bg-slate-800/80 backdrop-blur-md pt-4 pb-2">
-        <form id="chat-form" class="flex space-x-2">
-            <input 
-                type="text" 
-                id="message-input" 
-                placeholder="اكتب رسالتك هنا..." 
-                class="flex-grow px-4 py-3 rounded-lg border border-gray-300 dark:border-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white dark:bg-slate-800 text-gray-800 dark:text-gray-200"
-                autocomplete="off"
-            >
-            <label for="file-upload" class="file-upload-label">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                </svg>
-            </label>
-            <input type="file" id="file-upload" class="file-upload" accept="image/*">
-            <button 
-                type="submit" 
-                class="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition-all glow-on-hover"
-            >
-                إرسال
-            </button>
-        </form>
-        <p class="text-xs text-gray-500 dark:text-gray-400 mt-2 text-center">
-            يدعم الموقع الدردشة النصية ومعالجة الصور
-        </p>
-    </div>
-</div>
-
-<script>
-document.addEventListener('DOMContentLoaded', () => {
-    const chatForm = document.getElementById('chat-form');
-    const messageInput = document.getElementById('message-input');
-    const chatContainer = document.getElementById('chat-container');
-    const newChatBtn = document.getElementById('new-chat');
-    const fileUpload = document.getElementById('file-upload');
-    
-    // إرسال رسالة
-    chatForm.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const message = messageInput.value.trim();
-        const file = fileUpload.files[0];
-        
-        if (!message && !file) return;
-        
-        // إضافة رسالة المستخدم
-        if (message) {
-            addMessage('user', message);
-        }
-        
-        if (file) {
-            // معالجة الصورة
-            const reader = new FileReader();
-            reader.onload = async (e) => {
-                addMessage('user', '[صورة مرفوعة]', e.target.result);
-                
-                try {
-                    // إرسال الصورة إلى الخادم
-                    const response = await fetch('/api/chat', {
+        document.addEventListener('DOMContentLoaded', function() {
+            const chatForm = document.getElementById('chat-form');
+            const userInput = document.getElementById('user-input');
+            const chatMessages = document.getElementById('chat-messages');
+            
+            function addMessage(sender, message) {
+                const messageDiv = document.createElement('div');
+                messageDiv.className = `message p-3 rounded ${sender === 'user' ? 'user-message' : 'bot-message'}`;
+                messageDiv.textContent = message;
+                chatMessages.appendChild(messageDiv);
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            }
+            
+            chatForm.addEventListener('submit', function(e) {
+                e.preventDefault();
+                const message = userInput.value.trim();
+                if (message) {
+                    addMessage('user', message);
+                    userInput.value = '';
+                    
+                    fetch('/api/chat', {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
                         },
-                        body: JSON.stringify({ 
-                            message: message || 'حلل هذه الصورة',
-                            image: e.target.result 
-                        })
+                        body: JSON.stringify({ message: message })
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.reply) {
+                            addMessage('bot', data.reply);
+                        } else if (data.error) {
+                            addMessage('bot', 'حدث خطأ: ' + data.error);
+                        }
+                    })
+                    .catch(error => {
+                        addMessage('bot', 'حدث خطأ في الاتصال بالخادم');
+                        console.error('Error:', error);
                     });
-                    
-                    const data = await response.json();
-                    if (data.reply) {
-                        addMessage('bot', data.reply);
-                    } else {
-                        throw new Error(data.error || 'حدث خطأ غير متوقع');
-                    }
-                } catch (error) {
-                    addMessage('bot', 'عذرًا، حدث خطأ في معالجة الصورة.');
-                    console.error('Error:', error);
                 }
-            };
-            reader.readAsDataURL(file);
-        } else {
-            // إرسال نص فقط
-            try {
-                const response = await fetch('/api/chat', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ message })
-                });
-                
-                const data = await response.json();
-                if (data.reply) {
-                    addMessage('bot', data.reply);
-                } else {
-                    throw new Error(data.error || 'حدث خطأ غير متوقع');
-                }
-            } catch (error) {
-                addMessage('bot', 'عذرًا، حدث خطأ في معالجة طلبك.');
-                console.error('Error:', error);
-            }
-        }
-        
-        messageInput.value = '';
-        fileUpload.value = '';
-    });
-    
-    // محادثة جديدة
-    newChatBtn.addEventListener('click', () => {
-        if (confirm('هل تريد بدء محادثة جديدة؟ سيتم مسح سجل المحادثة الحالي.')) {
-            fetch('/api/new_chat', { method: 'POST' })
-                .then(() => location.reload())
-                .catch(err => console.error(err));
-        }
-    });
-    
-    // إضافة رسالة إلى الواجهة
-    function addMessage(sender, text, image = null) {
-        const messageDiv = document.createElement('div');
-        messageDiv.className = `flex ${sender === 'user' ? 'justify-end' : 'justify-start'}`;
-        
-        if (image) {
-            messageDiv.innerHTML = `
-                <div class="max-w-3/4 px-4 py-3 ${sender === 'user' ? 'message-user' : 'message-bot'}">
-                    <img src="${image}" class="max-w-full h-auto rounded-lg mb-2" alt="الصورة المرفوعة">
-                    ${text ? `<p>${text}</p>` : ''}
-                </div>
-            `;
-        } else {
-            messageDiv.innerHTML = `
-                <div class="max-w-3/4 px-4 py-3 ${sender === 'user' ? 'message-user' : 'message-bot'}">
-                    ${text.replace(/\n/g, '<br>')}
-                </div>
-            `;
-        }
-        
-        chatContainer.appendChild(messageDiv);
-        chatContainer.scrollTop = chatContainer.scrollHeight;
-    }
-});
-</script>
-"""
+            });
+        });
+    </script>
 
-## ====== مسارات الموقع ======
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+    ''',
+    
+    '404.html': '''
+<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>الصفحة غير موجودة - OTH AI</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="/">OTH AI</a>
+        </div>
+    </nav>
+
+    <div class="container py-5 text-center">
+        <h1 class="display-1 text-danger">404</h1>
+        <h2 class="mb-4">الصفحة غير موجودة</h2>
+        <p class="lead">عذراً، الصفحة التي تبحث عنها غير موجودة.</p>
+        <a href="/" class="btn btn-primary">العودة للصفحة الرئيسية</a>
+    </div>
+</body>
+</html>
+    '''
+}
+
+# وظائف إدارة البيانات
+def load_users():
+    global users
+    try:
+        if os.path.exists(DATA_FILE):
+            with open(DATA_FILE, 'r') as f:
+                users = json.load(f)
+        else:
+            users = {}
+    except Exception as e:
+        logger.error(f"Error loading users: {str(e)}")
+        users = {}
+
+def save_users():
+    try:
+        with open(DATA_FILE, 'w') as f:
+            json.dump(users, f, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving users: {str(e)}")
+
+# تحميل المستخدمين عند البدء
+load_users()
+
+# ديكورات المسارات
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            flash('يجب تسجيل الدخول أولاً', 'danger')
+            return redirect(url_for('login', next=request.url))
+        return f(*args, **kwargs)
+    return decorated_function
+
+# وظائف مساعدة
+def get_user_id(sender_id):
+    return hashlib.md5(sender_id.encode()).hexdigest()
+
+def setup_messenger_profile():
+    url = f"https://graph.facebook.com/v22.0/me/messenger_profile?access_token={PAGE_ACCESS_TOKEN}"
+    payload = {
+        "get_started": {"payload": "GET_STARTED"},
+        "persistent_menu": [
+            {
+                "locale": "default",
+                "composer_input_disabled": False,
+                "call_to_actions": [
+                    {
+                        "type": "web_url",
+                        "title": "🌐 الانتقال للويب",
+                        "url": "https://your-app.vercel.app/chat",
+                        "webview_height_ratio": "full",
+                        "messenger_extensions": True
+                    },
+                    {
+                        "type": "postback",
+                        "title": "🆘 المساعدة",
+                        "payload": "HELP_CMD"
+                    }
+                ]
+            }
+        ],
+        "whitelisted_domains": ["https://your-app.vercel.app"],
+        "greeting": [
+            {
+                "locale": "default",
+                "text": "مرحبًا بك في بوت OTH IA! 💎"
+            }
+        ]
+    }
+    try:
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+        logger.info("تم إعداد واجهة الماسنجر بنجاح")
+    except Exception as e:
+        logger.error(f"خطأ في إعداد الواجهة: {str(e)}")
+
+def download_image(url):
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        req = urllib.request.Request(url, headers=headers)
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp_file:
+            with urllib.request.urlopen(req) as response:
+                tmp_file.write(response.read())
+            return tmp_file.name
+    except Exception as e:
+        logger.error(f"خطأ في تحميل الصورة: {str(e)}")
+        return None
+
+def analyze_image(image_path, context=None):
+    try:
+        img = genai.upload_file(image_path)
+        prompt = "حلل هذه الصورة بدقة وقدم وصفاً شاملاً:"
+        if context:
+            prompt = f"سياق المحادثة:\n{context}\n{prompt}"
+        response = model.generate_content([prompt, img])
+        return response.text
+    except Exception as e:
+        logger.error(f"خطأ في تحليل الصورة: {str(e)}")
+        return None
+    finally:
+        if image_path and os.path.exists(image_path):
+            os.unlink(image_path)
+
+def send_message(recipient_id, message_text, buttons=None):
+    url = f"https://graph.facebook.com/v22.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
+    payload = {
+        "recipient": {"id": recipient_id},
+        "message": {"text": message_text} if not buttons else {
+            "attachment": {
+                "type": "template",
+                "payload": {
+                    "template_type": "button",
+                    "text": message_text,
+                    "buttons": buttons
+                }
+            }
+        },
+        "messaging_type": "RESPONSE"
+    }
+    try:
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+        return True
+    except Exception as e:
+        logger.error(f"خطأ في إرسال الرسالة: {str(e)}")
+        return False
+
+def cleanup_old_conversations():
+    current_time = time.time()
+    with data_lock:
+        for user_id in list(conversations.keys()):
+            if current_time - conversations[user_id]["last_active"] > CONVERSATION_TIMEOUT:
+                del conversations[user_id]
+                logger.info(f"تم حذف محادثة المستخدم {user_id} لانتهاء المهلة")
+
+# تعديل دالة render_template لاستخدام القوالب المضمنة
+def render_template(template_name, **context):
+    if template_name in TEMPLATES:
+        return render_template_string(TEMPLATES[template_name], **context)
+    raise Exception(f"Template {template_name} not found")
+
+# مسارات الويب
 @app.route('/')
 def home():
-    dark_mode = 'dark' if request.cookies.get('theme') == 'dark' else ''
+    return render_template('index.html')
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        
+        with data_lock:
+            user = users.get(username)
+            if user and check_password_hash(user['password'], password):
+                session['user_id'] = user['id']
+                session['username'] = username
+                session['session_id'] = str(uuid.uuid4())
+                session.permanent = True
+                
+                # إنشاء محادثة جديدة للمستخدم إذا لم تكن موجودة
+                if user['id'] not in conversations:
+                    conversations[user['id']] = {
+                        "history": ["بدأ المستخدم محادثة جديدة"],
+                        "last_active": time.time()
+                    }
+                
+                flash('تم تسجيل الدخول بنجاح!', 'success')
+                next_page = request.args.get('next')
+                return redirect(next_page or url_for('chat'))
+            else:
+                flash('اسم المستخدم أو كلمة المرور غير صحيحة', 'danger')
     
-    auth_buttons = """
-    <div class="flex space-x-2">
-        <a href="/login" class="px-4 py-2 text-indigo-600 dark:text-indigo-400 hover:bg-gray-100 dark:hover:bg-slate-700 rounded-lg transition-all">
-            تسجيل الدخول
-        </a>
-        <a href="/register" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-all">
-            إنشاء حساب
-        </a>
-    </div>
-    """ if 'user_id' not in session else """
-    <a href="/chat" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-all">
-        الدردشة
-    </a>
-    """
+    return render_template('login.html')
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        
+        if len(username) < 4 or len(password) < 6:
+            flash('اسم المستخدم يجب أن يكون 4 أحرف على الأقل وكلمة المرور 6 أحرف', 'danger')
+            return redirect(url_for('register'))
+        
+        with data_lock:
+            if username in users:
+                flash('اسم المستخدم موجود بالفعل', 'danger')
+            else:
+                user_id = str(uuid.uuid4())
+                users[username] = {
+                    'id': user_id,
+                    'username': username,
+                    'password': generate_password_hash(password),
+                    'created_at': datetime.now().isoformat()
+                }
+                save_users()
+                
+                # إنشاء محادثة جديدة للمستخدم
+                conversations[user_id] = {
+                    "history": ["بدأ المستخدم محادثة جديدة"],
+                    "last_active": time.time()
+                }
+                
+                flash('تم إنشاء الحساب بنجاح! يمكنك تسجيل الدخول الآن', 'success')
+                return redirect(url_for('login'))
     
-    flashes = ''
-    if '_flashes' in session:
-        flashes = '<div class="mb-6 space-y-2">' + \
-                  ''.join(f'<div class="px-4 py-3 rounded-lg bg-{cat}-100 text-{cat}-800 dark:bg-{cat}-900 dark:text-{cat}-200">{msg}</div>' 
-                          for cat, msg in session['_flashes']) + \
-                  '</div>'
-        session.pop('_flashes')
+    return render_template('register.html')
+
+@app.route('/logout')
+@login_required
+def logout():
+    user_id = session.get('user_id')
+    with data_lock:
+        if user_id in conversations:
+            del conversations[user_id]
     
-    return render_template_string(
-        BASE_HTML.format(
-            title="الرئيسية",
-            dark_mode=dark_mode,
-            auth_buttons=auth_buttons,
-            content=HOME_CONTENT,
-            flashes=flashes,
-            year=datetime.now().year,
-            additional_js=""
-        )
-    )
+    session.clear()
+    flash('تم تسجيل الخروج بنجاح', 'info')
+    return redirect(url_for('home'))
 
 @app.route('/chat')
+@login_required
 def chat():
-    if 'user_id' not in session:
-        flash('يجب تسجيل الدخول أولاً', 'danger')
-        return redirect(url_for('login'))
-    
-    user_id = session['user_id']
-    with db_lock:
-        if user_id not in conversations:
-            conversations[user_id] = []
-        
-        messages_html = '\n'.join(
-            f'<div class="flex {"justify-end" if msg["sender"] == "user" else "justify-start"}">'
-            f'<div class="max-w-3/4 px-4 py-3 {"message-user" if msg["sender"] == "user" else "message-bot'}">'
-            f'{msg["text"].replace("\n", "<br>")}'
-            f'</div></div>'
-            for msg in conversations[user_id]
-        )
-    
-    dark_mode = 'dark' if request.cookies.get('theme') == 'dark' else ''
-    return render_template_string(
-        BASE_HTML.format(
-            title="الدردشة",
-            dark_mode=dark_mode,
-            auth_buttons='<a href="/logout" class="text-indigo-600 dark:text-indigo-400 hover:underline">تسجيل الخروج</a>',
-            content=CHAT_CONTENT.format(messages=messages_html),
-            flashes='',
-            year=datetime.now().year,
-            additional_js=""
-        )
-    )
+    return render_template('chat.html')
 
 @app.route('/api/chat', methods=['POST'])
+@login_required
 def api_chat():
     if 'user_id' not in session:
-        return jsonify({'error': 'غير مسموح'}), 401
+        return jsonify({"error": "غير مصرح به"}), 401
     
-    user_id = session['user_id']
-    data = request.get_json()
-    message = data.get('message', '').strip()
-    image_data = data.get('image', None)
-    
-    if not message and not image_data:
-        return jsonify({'error': 'الرسالة فارغة'}), 400
-    
-    with db_lock:
-        if user_id not in conversations:
-            conversations[user_id] = []
+    try:
+        data = request.json
+        user_message = data.get('message', '').strip()
         
-        if message:
-            conversations[user_id].append({
-                'sender': 'user',
-                'text': message,
-                'time': time.time()
-            })
+        if not user_message:
+            return jsonify({"reply": "الرجاء إدخال رسالة صالحة"}), 400
         
-        try:
-            # معالجة الصور إذا وجدت
-            image_parts = []
-            if image_data:
-                img = Image.open(io.BytesIO(base64.b64decode(image_data.split(',')[1])))
-                img = img.convert('RGB')
-                img.thumbnail((800, 800))
-                
-                # تحويل الصورة إلى تنسيق مناسب لـ Gemini
-                buffered = io.BytesIO()
-                img.save(buffered, format="JPEG")
-                img_str = base64.b64encode(buffered.getvalue()).decode('utf-8')
-                
-                image_parts.append({
-                    'mime_type': 'image/jpeg',
-                    'data': img_str
-                })
+        user_id = session['user_id']
+        
+        with data_lock:
+            if user_id not in conversations:
+                conversations[user_id] = {
+                    "history": ["بدأ المستخدم محادثة جديدة"],
+                    "last_active": time.time()
+                }
             
-            # إرسال الطلب إلى Gemini
-            if image_parts:
-                if message:
-                    response = model.generate_content([message, *image_parts])
-                else:
-                    response = model.generate_content(image_parts)
-            else:
-                response = model.generate_content(message)
+            # تحديث وقت النشاط
+            conversations[user_id]["last_active"] = time.time()
             
+            # إضافة رسالة المستخدم
+            conversations[user_id]["history"].append(f"المستخدم: {user_message}")
+            
+            # الحصول على سياق المحادثة
+            context = "\n".join(conversations[user_id]["history"][-5:])
+            
+            # توليد الرد
+            prompt = f"{context}\n\nالسؤال: {user_message}" if context else user_message
+            response = model.generate_content(prompt)
             reply = response.text
             
-            conversations[user_id].append({
-                'sender': 'bot',
-                'text': reply,
-                'time': time.time()
-            })
+            # إضافة رد البوت
+            conversations[user_id]["history"].append(f"البوت: {reply}")
             
-            return jsonify({'reply': reply})
-        except Exception as e:
-            logger.error(f"Error in chat API: {str(e)}")
-            return jsonify({'error': 'حدث خطأ في معالجة طلبك'}), 500
+            return jsonify({"reply": reply}), 200
+            
+    except Exception as e:
+        logger.error(f"API Error: {str(e)}")
+        return jsonify({"reply": "حدث خطأ أثناء معالجة طلبك"}), 500
 
-## ====== دعم فيسبوك مع معالجة الصور ======
+# مسارات البوت (ابقاء جزء فيسبوك كما هو)
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
     if request.method == 'GET':
-        if request.args.get('hub.verify_token') == FB_VERIFY_TOKEN:
+        verify_token = request.args.get('hub.verify_token')
+        if verify_token == VERIFY_TOKEN:
             setup_messenger_profile()
             return request.args.get('hub.challenge')
         return "Verification failed", 403
@@ -482,213 +669,100 @@ def webhook():
         for entry in data.get('entry', []):
             for event in entry.get('messaging', []):
                 sender_id = event['sender']['id']
+                user_id = get_user_id(sender_id)
+                current_time = time.time()
                 
-                if event.get('message'):
+                # تنظيف المحادثات القديمة
+                cleanup_old_conversations()
+                
+                # معالجة Postback (أزرار القائمة)
+                if 'postback' in event:
+                    handle_command(sender_id, user_id, event['postback']['payload'])
+                    continue
+                    
+                # معالجة الرسائل
+                if 'message' in event:
                     message = event['message']
                     
-                    # معالجة الصور من فيسبوك
-                    if 'attachments' in message:
-                        for attachment in message['attachments']:
-                            if attachment['type'] == 'image':
-                                image_url = attachment['payload']['url']
-                                send_facebook_message(sender_id, "⏳ جاري تحليل الصورة...")
-                                
+                    with data_lock:
+                        if user_id not in conversations:
+                            conversations[user_id] = {
+                                "history": ["بدأ المستخدم محادثة جديدة"],
+                                "last_active": current_time
+                            }
+                            send_message(sender_id, "مرحباً بك في بوت OTH IA! 💎\n\nيمكنك إرسال أي سؤال أو صورة وسأساعدك.")
+                        
+                        # تحديث وقت النشاط
+                        conversations[user_id]["last_active"] = current_time
+                        
+                        # معالجة الصور
+                        if 'attachments' in message:
+                            for attachment in message['attachments']:
+                                if attachment['type'] == 'image':
+                                    send_message(sender_id, "⏳ جاري تحليل الصورة...")
+                                    image_url = attachment['payload']['url']
+                                    image_path = download_image(image_url)
+                                    
+                                    if image_path:
+                                        context = "\n".join(conversations[user_id]["history"][-5:])
+                                        analysis = analyze_image(image_path, context)
+                                        
+                                        if analysis:
+                                            conversations[user_id]["history"].append(f"صورة: {analysis[:200]}...")
+                                            send_message(sender_id, f"📸 تحليل الصورة:\n\n{analysis}")
+                                        else:
+                                            send_message(sender_id, "⚠️ تعذر تحليل الصورة")
+                            continue
+                        
+                        # معالجة النصوص
+                        if 'text' in message:
+                            user_message = message['text'].strip()
+                            
+                            if user_message.lower() in ['مساعدة', 'help']:
+                                send_message(sender_id, "🆘 مركز المساعدة:\n\n• اكتب سؤالك مباشرة\n• أرسل صورة لتحليلها\n• /new لبدء محادثة جديدة")
+                            else:
                                 try:
-                                    # تحميل الصورة
-                                    headers = {'User-Agent': 'Mozilla/5.0'}
-                                    req = urllib.request.Request(image_url, headers=headers)
-                                    with urllib.request.urlopen(req) as response:
-                                        img = Image.open(io.BytesIO(response.read()))
+                                    context = "\n".join(conversations[user_id]["history"][-5:])
+                                    prompt = f"{context}\n\nالسؤال: {user_message}" if context else user_message
                                     
-                                    # معالجة الصورة
-                                    img = img.convert('RGB')
-                                    img.thumbnail((800, 800))
+                                    response = model.generate_content(prompt)
+                                    reply = response.text
                                     
-                                    # تحويل الصورة إلى تنسيق مناسب لـ Gemini
-                                    buffered = io.BytesIO()
-                                    img.save(buffered, format="JPEG")
-                                    img_str = base64.b64encode(buffered.getvalue()).decode('utf-8')
+                                    conversations[user_id]["history"].append(f"المستخدم: {user_message}")
+                                    conversations[user_id]["history"].append(f"البوت: {reply}")
                                     
-                                    # تحليل الصورة باستخدام Gemini
-                                    response = model.generate_content({
-                                        'mime_type': 'image/jpeg',
-                                        'data': img_str
-                                    })
-                                    
-                                    reply = f"📸 تحليل الصورة:\n\n{response.text}"
-                                    send_facebook_message(sender_id, reply)
+                                    send_message(sender_id, reply)
                                 except Exception as e:
-                                    logger.error(f"Error analyzing Facebook image: {str(e)}")
-                                    send_facebook_message(sender_id, "⚠️ حدث خطأ أثناء تحليل الصورة")
-                                return jsonify({'status': 'ok'}), 200
-                    
-                    # معالجة الرسائل النصية
-                    if 'text' in message:
-                        text = message['text'].strip()
-                        handle_facebook_message(sender_id, text)
+                                    logger.error(f"AI Error: {str(e)}")
+                                    send_message(sender_id, "⚠️ حدث خطأ أثناء المعالجة، يرجى المحاولة لاحقاً")
     
     except Exception as e:
         logger.error(f"Webhook error: {str(e)}")
     
-    return jsonify({'status': 'ok'}), 200
+    return jsonify({"status": "ok"}), 200
 
-def setup_messenger_profile():
-    url = f"https://graph.facebook.com/v17.0/me/messenger_profile?access_token={FB_PAGE_TOKEN}"
-    profile_data = {
-        "get_started": {"payload": "GET_STARTED"},
-        "greeting": [
-            {
-                "locale": "default",
-                "text": "مرحبًا بك في بوت Gemini AI الذكي! يمكنك إرسال النصوص أو الصور وسأساعدك في تحليلها."
-            }
-        ],
-        "persistent_menu": [
-            {
-                "locale": "default",
-                "composer_input_disabled": False,
-                "call_to_actions": [
-                    {
-                        "type": "postback",
-                        "title": "مساعدة",
-                        "payload": "HELP"
-                    }
-                ]
-            }
-        ]
-    }
-    try:
-        response = requests.post(url, json=profile_data)
-        response.raise_for_status()
-        logger.info("تم إعداد صفحة الماسنجر بنجاح")
-    except Exception as e:
-        logger.error(f"خطأ في إعداد صفحة الماسنجر: {str(e)}")
+def handle_command(sender_id, user_id, command):
+    if command == "GET_STARTED":
+        send_message(sender_id, "مرحباً بك في OTH IA! 💎\n\nيمكنك إرسال أي سؤال أو صورة وسأساعدك.")
+    elif command == "HELP_CMD":
+        send_message(sender_id, "🆘 مركز المساعدة:\n\n• اكتب سؤالك مباشرة\n• أرسل صورة لتحليلها\n• /new لبدء محادثة جديدة")
 
-def send_facebook_message(recipient_id, message):
-    url = f"https://graph.facebook.com/v17.0/me/messages?access_token={FB_PAGE_TOKEN}"
-    message_data = {
-        "recipient": {"id": recipient_id},
-        "message": {"text": message}
-    }
-    try:
-        response = requests.post(url, json=message_data)
-        response.raise_for_status()
-        return True
-    except Exception as e:
-        logger.error(f"خطأ في إرسال رسالة فيسبوك: {str(e)}")
-        return False
+@app.errorhandler(404)
+def page_not_found(e):
+    return render_template('404.html'), 404
 
-def handle_facebook_message(sender_id, message):
-    with db_lock:
-        if sender_id not in conversations:
-            conversations[sender_id] = []
-        
-        conversations[sender_id].append({
-            'sender': 'user',
-            'text': message,
-            'time': time.time()
-        })
-        
-        try:
-            response = model.generate_content(message)
-            reply = response.text
-            
-            conversations[sender_id].append({
-                'sender': 'bot',
-                'text': reply,
-                'time': time.time()
-            })
-            
-            send_facebook_message(sender_id, reply)
-        except Exception as e:
-            logger.error(f"Error handling FB message: {str(e)}")
-            send_facebook_message(sender_id, "⚠️ حدث خطأ أثناء معالجة رسالتك")
+# تشغيل التنظيف الدوري كل ساعة
+def periodic_cleanup():
+    while True:
+        time.sleep(3600)  # كل ساعة
+        cleanup_old_conversations()
+        save_users()  # حفظ بيانات المستخدمين بانتظام
 
-## ====== مسارات إضافية ======
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        username = request.form.get('username', '').strip()
-        password = request.form.get('password', '').strip()
-        
-        with db_lock:
-            user = users.get(username)
-            if user and check_password_hash(user['password'], password):
-                session['user_id'] = user['id']
-                session['username'] = username
-                flash('تم تسجيل الدخول بنجاح!', 'success')
-                return redirect(url_for('chat'))
-            else:
-                flash('اسم المستخدم أو كلمة المرور غير صحيحة', 'danger')
-    
-    dark_mode = 'dark' if request.cookies.get('theme') == 'dark' else ''
-    return render_template_string(
-        BASE_HTML.format(
-            title="تسجيل الدخول",
-            dark_mode=dark_mode,
-            auth_buttons='',
-            content=LOGIN_CONTENT,
-            flashes='',
-            year=datetime.now().year,
-            additional_js=""
-        )
-    )
+# بدء التنظيف الدوري في خيط منفصل
+cleanup_thread = Thread(target=periodic_cleanup)
+cleanup_thread.daemon = True
+cleanup_thread.start()
 
-@app.route('/register', methods=['GET', 'POST'])
-def register():
-    if request.method == 'POST':
-        username = request.form.get('username', '').strip()
-        password = request.form.get('password', '').strip()
-        
-        if len(username) < 4:
-            flash('اسم المستخدم يجب أن يكون 4 أحرف على الأقل', 'danger')
-        elif len(password) < 6:
-            flash('كلمة المرور يجب أن تكون 6 أحرف على الأقل', 'danger')
-        elif username in users:
-            flash('اسم المستخدم موجود بالفعل', 'danger')
-        else:
-            user_id = str(uuid.uuid4())
-            users[username] = {
-                'id': user_id,
-                'username': username,
-                'password': generate_password_hash(password),
-                'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }
-            
-            session['user_id'] = user_id
-            session['username'] = username
-            flash('تم إنشاء الحساب بنجاح!', 'success')
-            return redirect(url_for('chat'))
-    
-    dark_mode = 'dark' if request.cookies.get('theme') == 'dark' else ''
-    return render_template_string(
-        BASE_HTML.format(
-            title="إنشاء حساب",
-            dark_mode=dark_mode,
-            auth_buttons='',
-            content=REGISTER_CONTENT,
-            flashes='',
-            year=datetime.now().year,
-            additional_js=""
-        )
-    )
-
-@app.route('/logout')
-def logout():
-    session.clear()
-    flash('تم تسجيل الخروج بنجاح', 'info')
-    return redirect(url_for('home'))
-
-@app.route('/api/new_chat', methods=['POST'])
-def new_chat():
-    if 'user_id' not in session:
-        return jsonify({'error': 'غير مسموح'}), 401
-    
-    user_id = session['user_id']
-    with db_lock:
-        conversations[user_id] = []
-    
-    return jsonify({'status': 'success'})
-
-## ====== تشغيل التطبيق ======
 if __name__ == '__main__':
+    setup_messenger_profile()
     app.run(debug=True)
