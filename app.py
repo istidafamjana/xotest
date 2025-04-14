@@ -6,7 +6,6 @@ import logging
 import tempfile
 import urllib.request
 import os
-import time
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import langid  # مكتبة لتحديد اللغة
@@ -18,9 +17,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # التوكنات والمفاتيح (يجب تخزينها في متغيرات البيئة)
-PAGE_ACCESS_TOKEN = "EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD"
-VERIFY_TOKEN = "d51ee4e3183dbbd9a27b7d2c1af8c655"
-GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"
+PAGE_ACCESS_TOKEN = "YOUR_PAGE_ACCESS_TOKEN"
+VERIFY_TOKEN = "YOUR_VERIFY_TOKEN"
+GEMINI_API_KEY = "YOUR_GEMINI_API_KEY"
 
 # تهيئة نموذج Gemini
 genai.configure(api_key=GEMINI_API_KEY)
@@ -80,6 +79,8 @@ async def download_image(url):
     except Exception as e:
         logger.error(f"Error downloading image: {str(e)}")
         return None
+    except:
+        return None
 
 async def analyze_image_with_description(image_path, description, lang='ar'):
     """تحليل الصورة مع الوصف باستخدام Gemini"""
@@ -120,14 +121,23 @@ async def analyze_image_with_description(image_path, description, lang='ar'):
         return None
     finally:
         if image_path and os.path.exists(image_path):
-            os.unlink(image_path)
+            try:
+                os.unlink(image_path)
+            except:
+                pass
 
 async def generate_text_async(prompt, lang='ar'):
     """إنشاء نص باستخدام Gemini مع مراعاة اللغة"""
     try:
         # إضافة توجيه للغة إذا لزم الأمر
         if lang != 'en':
-            prompt = f"الرجاء الإجابة باللغة {lang}\n{prompt}" if lang == 'ar' else f"Please respond in {lang}\n{prompt}"
+            language_prompt = {
+                'ar': "الرجاء الإجابة باللغة العربية",
+                'fr': "Veuillez répondre en français"
+            }.get(lang, "")
+            
+            if language_prompt:
+                prompt = f"{language_prompt}\n{prompt}"
         
         response = await asyncio.get_event_loop().run_in_executor(
             executor,
@@ -167,10 +177,11 @@ async def send_message_async(recipient_id, message_text, buttons=None, quick_rep
         payload["message"] = {"text": message_text}
 
     try:
-        await asyncio.get_event_loop().run_in_executor(
+        response = await asyncio.get_event_loop().run_in_executor(
             executor,
-            lambda: requests.post(url, json=payload).raise_for_status()
+            lambda: requests.post(url, json=payload, timeout=10)
         )
+        response.raise_for_status()
         return True
     except Exception as e:
         logger.error(f"Error sending message: {str(e)}")
@@ -181,10 +192,14 @@ async def handle_command(sender_id, command, lang='ar'):
     responses = get_language_response(lang)
     
     if command == "GET_STARTED":
+        quick_reply_title = "📖 المساعدة" if lang == 'ar' else "📖 Help"
+        if lang == 'fr':
+            quick_reply_title = "📖 Aide"
+            
         await send_message_async(sender_id, responses['welcome'], quick_replies=[
             {
                 "content_type": "text",
-                "title": "📖 المساعدة" if lang == 'ar' else "📖 Help",
+                "title": quick_reply_title,
                 "payload": "HELP_CMD"
             }
         ])
@@ -203,40 +218,72 @@ async def handle_image(sender_id, image_url, lang='ar'):
     await send_message_async(sender_id, responses['image_prompt'])
     
     # تخزين رابط الصورة مؤقتًا في المحادثة
-    if sender_id not in conversations:
-        conversations[sender_id] = {
-            'history': [],
-            'expiry': datetime.now() + timedelta(hours=5),
-            'pending_image': image_url,
-            'lang': lang
-        }
-    else:
-        conversations[sender_id]['pending_image'] = image_url
-        conversations[sender_id]['expiry'] = datetime.now() + timedelta(hours=5)
-        conversations[sender_id]['lang'] = lang
+    conversations[sender_id] = {
+        'history': conversations.get(sender_id, {}).get('history', []),
+        'expiry': datetime.now() + timedelta(hours=5),
+        'pending_image': image_url,
+        'lang': lang
+    }
 
 async def process_pending_image(sender_id, user_prompt):
     """معالجة الصورة المعلقة مع الطلب من المستخدم"""
-    if sender_id in conversations and 'pending_image' in conversations[sender_id]:
-        image_url = conversations[sender_id]['pending_image']
-        lang = conversations[sender_id].get('lang', 'ar')
+    if sender_id not in conversations or 'pending_image' not in conversations[sender_id]:
+        return
+
+    conversation = conversations[sender_id]
+    image_url = conversation['pending_image']
+    lang = conversation.get('lang', 'ar')
+    responses = get_language_response(lang)
+    
+    del conversation['pending_image']
+    
+    image_path = await download_image(image_url)
+    
+    if not image_path:
+        await send_message_async(sender_id, responses['error'])
+        return
+
+    analysis = await analyze_image_with_description(image_path, user_prompt, lang)
+    if analysis:
+        await send_message_async(sender_id, f"{responses['analysis']}\n\n{analysis}")
+    else:
+        await send_message_async(sender_id, responses['error'])
+
+async def process_message(sender_id, message_text, lang='ar'):
+    """معالجة الرسائل النصية العادية"""
+    try:
+        # إضافة سياق المحادثة إذا موجود
+        user_message = message_text
+        if sender_id in conversations:
+            context = "\n".join(conversations[sender_id]['history'][-3:])
+            user_message = f"{context}\n\n{message_text}"
+        
+        # الحصول على الإجابة من Gemini
+        response_text = await generate_text_async(user_message, lang)
+        
+        if not response_text:
+            raise Exception("Failed to generate response")
+        
+        # تخزين المحادثة
+        if sender_id not in conversations:
+            conversations[sender_id] = {
+                'history': [],
+                'expiry': datetime.now() + timedelta(hours=5),
+                'lang': lang
+            }
+        
+        conversations[sender_id]['history'].append(f"User: {message_text}")
+        conversations[sender_id]['history'].append(f"Bot: {response_text}")
+        conversations[sender_id]['expiry'] = datetime.now() + timedelta(hours=5)
+        conversations[sender_id]['lang'] = lang
+        
+        # إرسال الإجابة
+        await send_message_async(sender_id, response_text)
+        
+    except Exception as e:
+        logger.error(f"AI Error: {str(e)}")
         responses = get_language_response(lang)
-        
-        del conversations[sender_id]['pending_image']
-        
-        image_path = await asyncio.get_event_loop().run_in_executor(
-            executor,
-            lambda: download_image(image_url)
-        )
-        
-        if image_path:
-            analysis = await analyze_image_with_description(image_path, user_prompt, lang)
-            if analysis:
-                await send_message_async(sender_id, f"{responses['analysis']}\n\n{analysis}")
-            else:
-                await send_message_async(sender_id, responses['error'])
-        else:
-            await send_message_async(sender_id, responses['error'])
+        await send_message_async(sender_id, responses['error'])
 
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
@@ -256,9 +303,12 @@ def webhook():
 
 async def process_webhook_events(data):
     """معالجة أحداث الويب هوك بشكل غير متزامن"""
-    try:
-        for entry in data.get('entry', []):
-            for event in entry.get('messaging', []):
+    if not data or 'entry' not in data:
+        return
+
+    for entry in data.get('entry', []):
+        for event in entry.get('messaging', []):
+            try:
                 sender_id = event['sender']['id']
                 
                 # تنظيف المحادثات القديمة
@@ -297,45 +347,18 @@ async def process_webhook_events(data):
                             continue
                         
                         # الأوامر النصية
-                        if user_message.lower() in ['ابدأ', 'بدء', 'start', 'commencer']:
+                        lower_msg = user_message.lower()
+                        if any(cmd in lower_msg for cmd in ['ابدأ', 'بدء', 'start', 'commencer']):
                             await handle_command(sender_id, "GET_STARTED", lang)
-                        elif user_message.lower() in ['مساعدة', 'مساعده', 'help', 'aide']:
+                        elif any(cmd in lower_msg for cmd in ['مساعدة', 'مساعده', 'help', 'aide']):
                             await handle_command(sender_id, "HELP_CMD", lang)
-                        elif user_message.lower() in ['اعادة', 'إعادة', 'restart', 'réinitialiser']:
+                        elif any(cmd in lower_msg for cmd in ['اعادة', 'إعادة', 'restart', 'réinitialiser']):
                             await handle_command(sender_id, "RESTART_CMD", lang)
                         else:
-                            # معالجة الأسئلة النصية مع الاحتفاظ بالسياق
-                            try:
-                                # إضافة سياق المحادثة إذا موجود
-                                if sender_id in conversations:
-                                    context = "\n".join(conversations[sender_id]['history'][-3:])
-                                    user_message = f"{context}\n\n{user_message}"
-                                
-                                # الحصول على الإجابة من Gemini
-                                response_text = await generate_text_async(user_message, lang)
-                                
-                                # تخزين المحادثة
-                                if sender_id not in conversations:
-                                    conversations[sender_id] = {
-                                        'history': [],
-                                        'expiry': datetime.now() + timedelta(hours=5),
-                                        'lang': lang
-                                    }
-                                
-                                conversations[sender_id]['history'].append(f"User: {message['text']}")
-                                conversations[sender_id]['history'].append(f"Bot: {response_text}")
-                                conversations[sender_id]['expiry'] = datetime.now() + timedelta(hours=5)
-                                
-                                # إرسال الإجابة
-                                await send_message_async(sender_id, response_text)
-                                
-                            except Exception as e:
-                                logger.error(f"AI Error: {str(e)}")
-                                responses = get_language_response(lang)
-                                await send_message_async(sender_id, responses['error'])
-    
-    except Exception as e:
-        logger.error(f"Webhook Error: {str(e)}")
+                            await process_message(sender_id, user_message, lang)
+            except Exception as e:
+                logger.error(f"Error processing event: {str(e)}")
+                continue
 
 @app.route('/')
 def home():
