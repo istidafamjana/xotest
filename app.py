@@ -342,4 +342,4 @@ def home():
     return "Facebook Messenger AI Bot with Multi-Language Support!"
 
 if __name__ == '__main__':
-    app.run(threaded=True)
+    app.run()
