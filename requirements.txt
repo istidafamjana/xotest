@@ -6,3 +6,7 @@ Pillow
 python-dateutil
 pytz
 requests
+Flask==2.3.2
+google-generativeai==0.3.2
+requests==2.31.0
+Pillow==10.0.0
