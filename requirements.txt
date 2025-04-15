@@ -3,3 +3,5 @@ requests
 google-generativeai
 langid
 urllib3
+langid
+Werkzeug
