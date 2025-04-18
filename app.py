@@ -728,7 +728,7 @@ def create_static_files():
     static_dir.mkdir(exist_ok=True)
     
     index_html = """
-    <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
     <meta charset="UTF-8">
@@ -906,6 +906,20 @@ def create_static_files():
             box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
         }
         
+        pre {
+            background: #2a2a40;
+            padding: 10px;
+            border-radius: 8px;
+            overflow-x: auto;
+            direction: ltr;
+            text-align: left;
+        }
+        
+        code {
+            font-family: 'Courier New', Courier, monospace;
+            color: #f8f8f2;
+        }
+        
         .input-area {
             display: flex;
             margin: 10px;
@@ -968,6 +982,17 @@ def create_static_files():
             font-size: 1.5em;
             color: #6a11cb;
             margin: 10px;
+            display: none;
+        }
+        
+        .typing-indicator.active {
+            display: block;
+            animation: blink 1.5s infinite;
+        }
+        
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
         }
         
         .auth-container {
@@ -1051,6 +1076,41 @@ def create_static_files():
             border-radius: 10px;
             display: none;
         }
+        
+        .file-info {
+            display: none;
+            background: #3a3a5d;
+            padding: 10px;
+            border-radius: 10px;
+            margin: 10px 0;
+        }
+        
+        .typing-animation {
+            display: inline-block;
+        }
+        
+        .typing-animation span {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background-color: #6a11cb;
+            border-radius: 50%;
+            margin: 0 2px;
+            animation: typing 1.4s infinite both;
+        }
+        
+        .typing-animation span:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+        
+        .typing-animation span:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+        
+        @keyframes typing {
+            0%, 60%, 100% { transform: translateY(0); }
+            30% { transform: translateY(-5px); }
+        }
     </style>
 </head>
 <body>
@@ -1078,12 +1138,13 @@ def create_static_files():
         <input type="text" id="userInput" placeholder="⌨️ اكتب رسالتك..." onkeypress="handleKeyPress(event)">
         <button class="file-upload-button">
             <i class="fas fa-image"></i>
-            <input type="file" id="fileUpload" class="file-upload-input" accept="image/*" onchange="handleImageUpload()">
+            <input type="file" id="fileUpload" class="file-upload-input" accept="image/*,.pdf,.txt,.doc,.docx" onchange="handleFileUpload()">
         </button>
         <button onclick="sendMessage()">إرسال</button>
     </div>
 
     <img id="imagePreview" class="image-preview">
+    <div id="fileInfo" class="file-info"></div>
 
     <!-- صفحة تسجيل الدخول -->
     <div class="auth-container" id="authContainer">
@@ -1111,8 +1172,9 @@ def create_static_files():
         // متغيرات عامة
         let currentUser = null;
         let userToken = null;
-        let pendingImage = null;
+        let pendingFile = null;
         const API_BASE_URL = window.location.origin;
+        let isTyping = false;
         
         // عناصر DOM
         const chatWindow = document.getElementById("chatWindow");
@@ -1122,6 +1184,7 @@ def create_static_files():
         const loginError = document.getElementById("loginError");
         const registerError = document.getElementById("registerError");
         const imagePreview = document.getElementById("imagePreview");
+        const fileInfo = document.getElementById("fileInfo");
         const fileUpload = document.getElementById("fileUpload");
 
         // عند تحميل الصفحة
@@ -1254,7 +1317,7 @@ def create_static_files():
         function logout() {
             currentUser = null;
             userToken = null;
-            pendingImage = null;
+            pendingFile = null;
             localStorage.removeItem('ai_chat_user');
             localStorage.removeItem('ai_chat_token');
             showAuthContainer();
@@ -1266,31 +1329,56 @@ def create_static_files():
             element.style.display = 'block';
         }
 
-        function handleImageUpload() {
+        function handleFileUpload() {
             const file = fileUpload.files[0];
             if (!file) return;
             
-            if (!file.type.match('image.*')) {
-                alert("الرجاء اختيار ملف صورة فقط");
-                return;
-            }
+            pendingFile = file;
             
-            const reader = new FileReader();
-            reader.onload = function(e) {
-                imagePreview.src = e.target.result;
-                imagePreview.style.display = 'block';
-                pendingImage = file;
-            };
-            reader.readAsDataURL(file);
+            if (file.type.match('image.*')) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    imagePreview.src = e.target.result;
+                    imagePreview.style.display = 'block';
+                    fileInfo.style.display = 'none';
+                };
+                reader.readAsDataURL(file);
+            } else {
+                imagePreview.style.display = 'none';
+                fileInfo.innerHTML = `
+                    <i class="fas fa-file"></i> ${file.name} (${formatFileSize(file.size)})
+                    <input type="text" id="filePrompt" placeholder="✍️ اكتب وصفًا للملف..." style="width: 100%; margin-top: 10px;">
+                `;
+                fileInfo.style.display = 'block';
+            }
+        }
+
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
         }
 
         async function sendMessage() {
             const userInput = document.getElementById("userInput");
             const messageText = userInput.value.trim();
             
-            // إذا كانت هناك صورة معلقة
-            if (pendingImage) {
-                await sendImageWithPrompt(messageText || "وصف هذه الصورة");
+            // إذا كان هناك ملف معلق
+            if (pendingFile) {
+                let prompt = messageText;
+                
+                if (!prompt && fileInfo.style.display === 'block') {
+                    prompt = document.getElementById("filePrompt").value.trim();
+                }
+                
+                if (!prompt) {
+                    prompt = pendingFile.type.match('image.*') ? 
+                        "وصف هذه الصورة" : "تحليل هذا الملف";
+                }
+                
+                await sendFileWithPrompt(prompt);
                 userInput.value = "";
                 return;
             }
@@ -1300,7 +1388,7 @@ def create_static_files():
             addMessage(messageText, "user-message");
             userInput.value = "";
             
-            addTypingIndicator();
+            showTypingIndicator();
             
             try {
                 const response = await fetch(`${API_BASE_URL}/chat?text=${encodeURIComponent(messageText)}`, {
@@ -1315,33 +1403,68 @@ def create_static_files():
                 }
                 
                 const data = await response.json();
-                removeTypingIndicator();
-                addMessage(data.response, "bot-message");
+                
+                if (data.chunked) {
+                    displayChunkedResponse(data.response);
+                } else {
+                    addMessage(data.response, "bot-message");
+                }
+                
                 saveChatHistory();
                 
             } catch (error) {
-                removeTypingIndicator();
                 addMessage("تعذر جلب الرد من الخادم", "bot-message");
                 console.error("Error sending message:", error);
+            } finally {
+                hideTypingIndicator();
             }
         }
 
-        async function sendImageWithPrompt(prompt) {
-            if (!pendingImage) return;
+        function displayChunkedResponse(response) {
+            const words = response.split(' ');
+            let currentChunk = '';
+            let messageDiv = createMessageDiv("", "bot-message");
+            
+            const interval = setInterval(() => {
+                if (words.length === 0) {
+                    clearInterval(interval);
+                    return;
+                }
+                
+                currentChunk += words.shift() + ' ';
+                messageDiv.innerHTML = formatResponse(currentChunk);
+                chatWindow.scrollTop = chatWindow.scrollHeight;
+            }, 50);
+        }
+
+        function formatResponse(text) {
+            // تحويل الأكواد إلى تنسيق جميل
+            let formatted = text;
+            formatted = formatted.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+            formatted = formatted.replace(/`([^`]+)`/g, '<code>$1</code>');
+            return formatted;
+        }
+
+        async function sendFileWithPrompt(prompt) {
+            if (!pendingFile) return;
             
             const formData = new FormData();
-            formData.append('file', pendingImage);
+            formData.append('file', pendingFile);
             formData.append('prompt', prompt);
             
-            addMessage(`صورة: ${prompt}`, "user-message");
+            const endpoint = pendingFile.type.match('image.*') ? 
+                '/chat/image' : '/chat/file';
+            
+            addMessage(`📄 ${pendingFile.name}: ${prompt}`, "user-message");
             imagePreview.style.display = 'none';
-            pendingImage = null;
+            fileInfo.style.display = 'none';
+            pendingFile = null;
             fileUpload.value = "";
             
-            addTypingIndicator();
+            showTypingIndicator();
             
             try {
-                const response = await fetch(`${API_BASE_URL}/chat/image`, {
+                const response = await fetch(`${API_BASE_URL}${endpoint}`, {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${userToken}`,
@@ -1355,38 +1478,57 @@ def create_static_files():
                 }
                 
                 const data = await response.json();
-                removeTypingIndicator();
-                addMessage(data.response, "bot-message");
+                
+                if (data.typing) {
+                    displayChunkedResponse(data.response);
+                } else {
+                    addMessage(data.response, "bot-message");
+                }
+                
                 saveChatHistory();
                 
             } catch (error) {
-                removeTypingIndicator();
-                addMessage("تعذر تحليل الصورة", "bot-message");
-                console.error("Error sending image:", error);
+                addMessage("تعذر تحليل الملف", "bot-message");
+                console.error("Error sending file:", error);
+            } finally {
+                hideTypingIndicator();
             }
         }
 
-        function addMessage(text, className) {
+        function createMessageDiv(text, className) {
             const messageDiv = document.createElement("div");
             messageDiv.className = className;
-            messageDiv.textContent = text;
+            messageDiv.innerHTML = formatResponse(text);
             chatWindow.appendChild(messageDiv);
             chatWindow.scrollTop = chatWindow.scrollHeight;
+            return messageDiv;
         }
 
-        function addTypingIndicator() {
+        function addMessage(text, className) {
+            createMessageDiv(text, className);
+        }
+
+        function showTypingIndicator() {
+            if (isTyping) return;
+            
+            isTyping = true;
             const typingDiv = document.createElement("div");
-            typingDiv.className = "typing-indicator";
-            typingDiv.textContent = "...";
+            typingDiv.className = "bot-message typing-indicator";
+            typingDiv.innerHTML = `
+                <div class="typing-animation">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+            `;
             chatWindow.appendChild(typingDiv);
             chatWindow.scrollTop = chatWindow.scrollHeight;
         }
 
-        function removeTypingIndicator() {
-            const typingDiv = document.querySelector(".typing-indicator");
-            if (typingDiv) {
-                typingDiv.remove();
-            }
+        function hideTypingIndicator() {
+            isTyping = false;
+            const typingIndicators = document.querySelectorAll(".typing-indicator");
+            typingIndicators.forEach(indicator => indicator.remove());
         }
 
         function clearChat() {
