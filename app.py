@@ -1,15 +1,15 @@
 from flask import Flask, request, jsonify
-import requests
-import google.generativeai as genai
 from datetime import datetime, timedelta
 import logging
+import jwt
+import os
+from werkzeug.security import generate_password_hash, check_password_hash
+import google.generativeai as genai
 import tempfile
 import urllib.request
-import os
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import langid
-import time
 
 app = Flask(__name__)
 
@@ -18,9 +18,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # التوكنات والمفاتيح
-PAGE_ACCESS_TOKEN = "EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD"
-VERIFY_TOKEN = "d51ee4e3183dbbd9a27b7d2c1af8c655"
+SECRET_KEY = "your_very_secret_key_here"
 GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"
+
 # تهيئة نموذج Gemini
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
@@ -28,6 +28,18 @@ model = genai.GenerativeModel('gemini-1.5-flash')
 # تخزين المحادثات (تخزين آخر 20 رسالة لكل مستخدم)
 conversations = {}
 executor = ThreadPoolExecutor(max_workers=20)
+
+# قاعدة بيانات المستخدمين (في بيئة حقيقية استخدم قاعدة بيانات حقيقية)
+users = {
+    "admin": {
+        "password": generate_password_hash("admin123"),
+        "name": "Admin User"
+    },
+    "user1": {
+        "password": generate_password_hash("password1"),
+        "name": "User One"
+    }
+}
 
 def detect_language(text):
     """تحديد لغة النص"""
@@ -92,26 +104,6 @@ async def analyze_image_with_prompt(image_path, user_prompt, lang='ar'):
             except:
                 pass
 
-async def send_message_async(recipient_id, message_text):
-    """إرسال رسالة بشكل غير متزامن"""
-    max_length = 1900
-    chunks = [message_text[i:i+max_length] for i in range(0, len(message_text), max_length)]
-    
-    for chunk in chunks:
-        url = f"https://graph.facebook.com/v17.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
-        payload = {
-            "recipient": {"id": recipient_id},
-            "message": {"text": chunk}
-        }
-        
-        try:
-            await asyncio.get_event_loop().run_in_executor(
-                executor,
-                lambda: requests.post(url, json=payload, timeout=7)
-            )
-        except Exception as e:
-            logger.error(f"Error sending message: {str(e)}")
-
 async def generate_response_async(prompt, context=None, lang='ar'):
     """إنشاء رد باستخدام السياق"""
     try:
@@ -133,145 +125,199 @@ async def generate_response_async(prompt, context=None, lang='ar'):
         logger.error(f"Generation error: {str(e)}")
         return None
 
-async def handle_image_request(sender_id, image_url, lang='ar'):
-    """طلب وصف الصورة من المستخدم"""
-    if lang == 'ar':
-        message = "📸 لتحليل الصورة، الرجاء إرسال وصف لما تريد معرفته عنها:"
-    else:
-        message = "📸 To analyze the image, please describe what you want to know about it:"
-    
-    await send_message_async(sender_id, message)
-    
-    # تخزين معلومات الصورة مؤقتاً
-    if sender_id not in conversations:
-        conversations[sender_id] = {
-            'history': [],
-            'expiry': datetime.now() + timedelta(hours=5),
-            'lang': lang,
-            'pending_image': image_url
-        }
-    else:
-        conversations[sender_id]['pending_image'] = image_url
-        conversations[sender_id]['expiry'] = datetime.now() + timedelta(hours=5)
+def create_token(username):
+    """إنشاء توكن JWT"""
+    payload = {
+        'sub': username,
+        'iat': datetime.utcnow(),
+        'exp': datetime.utcnow() + timedelta(hours=5)
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm='HS256')
 
-async def process_image_with_description(sender_id, description, lang='ar'):
-    """معالجة الصورة بعد الحصول على الوصف"""
-    if sender_id not in conversations or 'pending_image' not in conversations[sender_id]:
-        return
-    
-    image_url = conversations[sender_id]['pending_image']
-    del conversations[sender_id]['pending_image']
-    
-    await send_message_async(sender_id, "🔍 جاري تحليل الصورة..." if lang == 'ar' else "🔍 Analyzing image...")
-    
-    image_path = await download_image(image_url)
-    if not image_path:
-        await send_message_async(sender_id, "⚠️ تعذر تحميل الصورة" if lang == 'ar' else "⚠️ Failed to load image")
-        return
-    
-    analysis = await analyze_image_with_prompt(image_path, description, lang)
-    if analysis:
-        # إضافة التحليل إلى سجل المحادثة
-        conversations[sender_id]['history'].append(f"User image analysis request: {description}")
-        conversations[sender_id]['history'].append(f"Image analysis: {analysis}")
-        
-        # تقليل السجل إذا تجاوز 20 رسالة (10 زوج من الرسائل)
-        if len(conversations[sender_id]['history']) > 20:
-            conversations[sender_id]['history'] = conversations[sender_id]['history'][-20:]
-        
-        await send_message_async(sender_id, analysis)
-    else:
-        await send_message_async(sender_id, "⚠️ تعذر تحليل الصورة" if lang == 'ar' else "⚠️ Failed to analyze image")
+def verify_token(token):
+    """التحقق من صحة التوكن"""
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=['HS256'])
+        return payload['sub']
+    except jwt.ExpiredSignatureError:
+        return None
+    except jwt.InvalidTokenError:
+        return None
 
-async def process_text_message(sender_id, message_text, lang='ar'):
-    """معالجة الرسائل النصية"""
-    # التحقق أولاً إذا كانت هناك صورة تنتظر وصفاً
-    if sender_id in conversations and 'pending_image' in conversations[sender_id]:
-        await process_image_with_description(sender_id, message_text, lang)
-        return
+@app.route('/auth', methods=['POST'])
+def authenticate():
+    """نقطة نهاية المصادقة"""
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
     
-    # معالجة الأوامر السريعة
-    lower_msg = message_text.lower()
-    if any(cmd in lower_msg for cmd in ['مساعدة', 'help']):
-        help_msg = "أرسل صورة ثم اتبعها بوصف لما تريد معرفته، أو اكتب سؤالك مباشرة" if lang == 'ar' else "Send an image followed by your request, or type your question"
-        await send_message_async(sender_id, help_msg)
-        return
+    if not username or not password:
+        return jsonify({"error": "اسم المستخدم وكلمة المرور مطلوبان"}), 400
     
-    if any(cmd in lower_msg for cmd in ['اعادة', 'reset']):
-        if sender_id in conversations:
-            del conversations[sender_id]
-        await send_message_async(sender_id, "تم إعادة التشغيل" if lang == 'ar' else "Bot reset")
-        return
+    user = users.get(username)
+    if not user or not check_password_hash(user['password'], password):
+        return jsonify({"error": "اسم المستخدم أو كلمة المرور غير صحيحة"}), 401
+    
+    token = create_token(username)
+    return jsonify({"token": token, "username": username, "name": user['name']})
+
+@app.route('/chat', methods=['GET'])
+def chat():
+    """نقطة نهاية الدردشة النصية"""
+    token = request.headers.get('Authorization')
+    user_id = request.headers.get('User-ID')
+    
+    if not token or not token.startswith('Bearer '):
+        return jsonify({"error": "التوكن مطلوب"}), 401
+    
+    token = token.split(' ')[1]
+    username = verify_token(token)
+    
+    if not username or username != user_id:
+        return jsonify({"error": "توكن غير صالح أو منتهي الصلاحية"}), 401
+    
+    text = request.args.get('text', '')
+    if not text:
+        return jsonify({"error": "النص مطلوب"}), 400
+    
+    # تنظيف المحادثات القديمة
+    now = datetime.now()
+    if username in conversations and conversations[username]['expiry'] < now:
+        del conversations[username]
+    
+    # تحديد اللغة
+    lang = detect_language(text)
     
     # معالجة الأسئلة العادية مع السياق
     context = None
-    if sender_id in conversations and conversations[sender_id]['history']:
-        context = "\n".join(conversations[sender_id]['history'][-10:])  # استخدام آخر 10 رسائل كسياق
+    if username in conversations and conversations[username]['history']:
+        context = "\n".join(conversations[username]['history'][-10:])  # استخدام آخر 10 رسائل كسياق
     
-    response = await generate_response_async(message_text, context, lang)
-    if response:
-        # تحديث سجل المحادثة
-        if sender_id not in conversations:
-            conversations[sender_id] = {
-                'history': [],
-                'expiry': datetime.now() + timedelta(hours=5),
-                'lang': lang
-            }
-        
-        conversations[sender_id]['history'].append(f"User: {message_text}")
-        conversations[sender_id]['history'].append(f"Bot: {response}")
-        
-        # الحفاظ على آخر 20 رسالة كحد أقصى
-        if len(conversations[sender_id]['history']) > 20:
-            conversations[sender_id]['history'] = conversations[sender_id]['history'][-20:]
-        
-        await send_message_async(sender_id, response)
-    else:
-        await send_message_async(sender_id, "⚠️ حدث خطأ" if lang == 'ar' else "⚠️ An error occurred")
-
-@app.route('/webhook', methods=['GET', 'POST'])
-def webhook():
-    """نقطة نهاية الويب هوك"""
-    if request.method == 'GET':
-        if request.args.get('hub.verify_token') == VERIFY_TOKEN:
-            return request.args.get('hub.challenge')
-        return "Verification failed", 403
+    response = asyncio.run(generate_response_async(text, context, lang))
+    if not response:
+        return jsonify({"error": "حدث خطأ أثناء توليد الرد"}), 500
     
-    data = request.get_json()
-    asyncio.run(process_events(data))
-    return jsonify({"status": "success"}), 200
+    # تحديث سجل المحادثة
+    if username not in conversations:
+        conversations[username] = {
+            'history': [],
+            'expiry': datetime.now() + timedelta(hours=5),
+            'lang': lang
+        }
+    
+    conversations[username]['history'].append(f"User: {text}")
+    conversations[username]['history'].append(f"Bot: {response}")
+    
+    # الحفاظ على آخر 20 رسالة كحد أقصى
+    if len(conversations[username]['history']) > 20:
+        conversations[username]['history'] = conversations[username]['history'][-20:]
+    
+    return jsonify({"response": response})
 
-async def process_events(data):
-    """معالجة أحداث الويب هوك"""
-    if not data.get('entry'):
-        return
+@app.route('/chat/img', methods=['POST'])
+def chat_image():
+    """نقطة نهاية معالجة الصور"""
+    token = request.headers.get('Authorization')
+    user_id = request.headers.get('User-ID')
+    
+    if not token or not token.startswith('Bearer '):
+        return jsonify({"error": "التوكن مطلوب"}), 401
+    
+    token = token.split(' ')[1]
+    username = verify_token(token)
+    
+    if not username or username != user_id:
+        return jsonify({"error": "توكن غير صالح أو منتهي الصلاحية"}), 401
+    
+    if 'file' not in request.files:
+        return jsonify({"error": "لم يتم توفير ملف"}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "لم يتم اختيار ملف"}), 400
+    
+    # حفظ الملف مؤقتاً
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.jpg')
+    file.save(temp_file.name)
+    temp_file.close()
+    
+    # تحليل الصورة
+    prompt = request.form.get('prompt', 'وصف هذه الصورة')
+    lang = detect_language(prompt) if prompt else 'ar'
+    
+    analysis = asyncio.run(analyze_image_with_prompt(temp_file.name, prompt, lang))
+    
+    # تنظيف الملف المؤقت
+    try:
+        os.unlink(temp_file.name)
+    except:
+        pass
+    
+    if not analysis:
+        return jsonify({"error": "تعذر تحليل الصورة"}), 500
+    
+    # تحديث سجل المحادثة
+    if username not in conversations:
+        conversations[username] = {
+            'history': [],
+            'expiry': datetime.now() + timedelta(hours=5),
+            'lang': lang
+        }
+    
+    conversations[username]['history'].append(f"User image analysis request: {prompt}")
+    conversations[username]['history'].append(f"Image analysis: {analysis}")
+    
+    # الحفاظ على آخر 20 رسالة كحد أقصى
+    if len(conversations[username]['history']) > 20:
+        conversations[username]['history'] = conversations[username]['history'][-20:]
+    
+    return jsonify({"response": analysis})
 
-    for entry in data['entry']:
-        for event in entry.get('messaging', []):
-            try:
-                sender_id = event['sender']['id']
-                
-                # تنظيف المحادثات القديمة
-                now = datetime.now()
-                if sender_id in conversations and conversations[sender_id]['expiry'] < now:
-                    del conversations[sender_id]
-                
-                # تحديد اللغة
-                lang = 'ar'
-                if 'message' in event and 'text' in event['message']:
-                    lang = detect_language(event['message']['text'])
-                
-                # معالجة الرسائل
-                if 'message' in event:
-                    if 'text' in event['message']:
-                        await process_text_message(sender_id, event['message']['text'], lang)
-                    elif 'attachments' in event['message']:
-                        for attachment in event['message']['attachments']:
-                            if attachment['type'] == 'image':
-                                await handle_image_request(sender_id, attachment['payload']['url'], lang)
-                                
-            except Exception as e:
-                logger.error(f"Event processing error: {str(e)}")
+@app.route('/chat/file', methods=['POST'])
+def chat_file():
+    """نقطة نهاية معالجة الملفات"""
+    token = request.headers.get('Authorization')
+    user_id = request.headers.get('User-ID')
+    
+    if not token or not token.startswith('Bearer '):
+        return jsonify({"error": "التوكن مطلوب"}), 401
+    
+    token = token.split(' ')[1]
+    username = verify_token(token)
+    
+    if not username or username != user_id:
+        return jsonify({"error": "توكن غير صالح أو منتهي الصلاحية"}), 401
+    
+    if 'file' not in request.files:
+        return jsonify({"error": "لم يتم توفير ملف"}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "لم يتم اختيار ملف"}), 400
+    
+    # هنا يمكنك معالجة الملف حسب نوعه
+    # في هذا المثال سنقوم فقط بإرجاع معلومات عن الملف
+    file_info = {
+        "filename": file.filename,
+        "content_type": file.content_type,
+        "size": len(file.read())
+    }
+    
+    # في تطبيق حقيقي، يمكنك تحليل محتوى الملف هنا
+    response_text = f"تم استلام الملف: {file_info['filename']} (حجم: {file_info['size']} بايت)"
+    
+    # تحديث سجل المحادثة
+    if username not in conversations:
+        conversations[username] = {
+            'history': [],
+            'expiry': datetime.now() + timedelta(hours=5),
+            'lang': 'ar'
+        }
+    
+    conversations[username]['history'].append(f"User uploaded file: {file_info['filename']}")
+    conversations[username]['history'].append(f"Bot response: {response_text}")
+    
+    return jsonify({"response": response_text})
 
 if __name__ == '__main__':
     app.run(threaded=True)
