@@ -19,11 +19,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # التوكنات والمفاتيح
-SECRET_KEY = os.getenv('SECRET_KEY', 'your_very_strong_secret_key_here')
+SECRET_KEY = "oth2024"
 PAGE_ACCESS_TOKEN = "EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD"
 VERIFY_TOKEN = "d51ee4e3183dbbd9a27b7d2c1af8c655"
 GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"
-
 # تهيئة نموذج Gemini
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
@@ -1152,4 +1151,4 @@ if __name__ == '__main__':
     with open('static/index.html', 'w', encoding='utf-8') as f:
         f.write(html_content)
     
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True)
