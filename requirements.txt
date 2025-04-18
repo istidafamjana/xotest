@@ -5,3 +5,4 @@ langid
 urllib3
 langid
 Werkzeug
+PyJWT
