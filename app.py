@@ -30,9 +30,9 @@ logger = logging.getLogger(__name__)
 
 # التوكنات والمفاتيح
 SECRET_KEY = os.getenv('SECRET_KEY', 'your_very_strong_secret_key_here')
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'your_gemini_api_key')
-PAGE_ACCESS_TOKEN = os.getenv('PAGE_ACCESS_TOKEN', 'your_facebook_page_token')
-VERIFY_TOKEN = os.getenv('VERIFY_TOKEN', 'your_facebook_verify_token')
+PAGE_ACCESS_TOKEN = "EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD"
+VERIFY_TOKEN = "d51ee4e3183dbbd9a27b7d2c1af8c655"
+GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"
 
 # تهيئة نموذج Gemini
 genai.configure(api_key=GEMINI_API_KEY)
@@ -1034,6 +1034,34 @@ def create_static_files():
             cursor: pointer;
         }
         
+        .image-upload-button {
+            background: linear-gradient(45deg, #6a11cb, #2575fc);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            padding: 12px 15px;
+            margin-left: 10px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+        
+        .image-upload-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(106, 17, 203, 0.5);
+        }
+        
+        .image-upload-input {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0;
+            cursor: pointer;
+        }
+        
         .typing-indicator {
             font-size: 1.5em;
             color: #6a11cb;
@@ -1205,9 +1233,13 @@ def create_static_files():
 
     <div class="input-area">
         <input type="text" id="userInput" placeholder="⌨️ اكتب رسالتك..." onkeypress="handleKeyPress(event)">
+        <button class="image-upload-button">
+            <i class="fas fa-image"></i>
+            <input type="file" id="imageUpload" class="image-upload-input" accept="image/*">
+        </button>
         <button class="file-upload-button">
-            <i class="fas fa-paperclip"></i>
-            <input type="file" id="fileUpload" class="file-upload-input" accept="image/*,.pdf,.txt,.doc,.docx,.zip">
+            <i class="fas fa-file"></i>
+            <input type="file" id="fileUpload" class="file-upload-input" accept=".pdf,.txt,.doc,.docx,.zip">
         </button>
         <button onclick="sendMessage()">إرسال</button>
     </div>
@@ -1253,6 +1285,7 @@ def create_static_files():
         let currentUser = null;
         let userToken = null;
         let pendingFile = null;
+        let pendingImage = null;
         const API_BASE_URL = window.location.origin;
         let isTyping = false;
         
@@ -1266,6 +1299,7 @@ def create_static_files():
         const imagePreview = document.getElementById("imagePreview");
         const fileInfo = document.getElementById("fileInfo");
         const fileUpload = document.getElementById("fileUpload");
+        const imageUpload = document.getElementById("imageUpload");
         const toast = document.getElementById("toast");
         const userInput = document.getElementById("userInput");
 
@@ -1273,13 +1307,19 @@ def create_static_files():
         window.onload = function() {
             checkAuth();
             
-            // إصلاح مشكلة اختيار الملفات
+            // إعداد أزرار رفع الملفات
             document.querySelector('.file-upload-button').addEventListener('click', function(e) {
                 if (e.target !== this) return;
                 fileUpload.click();
             });
             
+            document.querySelector('.image-upload-button').addEventListener('click', function(e) {
+                if (e.target !== this) return;
+                imageUpload.click();
+            });
+            
             fileUpload.addEventListener('change', handleFileUpload);
+            imageUpload.addEventListener('change', handleImageUpload);
         };
 
         function showToast(message) {
@@ -1428,6 +1468,7 @@ def create_static_files():
             currentUser = null;
             userToken = null;
             pendingFile = null;
+            pendingImage = null;
             localStorage.removeItem('ai_chat_user');
             localStorage.removeItem('ai_chat_token');
             showAuthContainer();
@@ -1439,28 +1480,35 @@ def create_static_files():
             element.style.display = 'block';
         }
 
+        function handleImageUpload() {
+            const file = imageUpload.files[0];
+            if (!file) return;
+            
+            pendingImage = file;
+            pendingFile = null;
+            
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                imagePreview.src = e.target.result;
+                imagePreview.style.display = 'block';
+                fileInfo.style.display = 'none';
+            };
+            reader.readAsDataURL(file);
+        }
+
         function handleFileUpload() {
             const file = fileUpload.files[0];
             if (!file) return;
             
             pendingFile = file;
+            pendingImage = null;
             
-            if (file.type.match('image.*')) {
-                const reader = new FileReader();
-                reader.onload = function(e) {
-                    imagePreview.src = e.target.result;
-                    imagePreview.style.display = 'block';
-                    fileInfo.style.display = 'none';
-                };
-                reader.readAsDataURL(file);
-            } else {
-                imagePreview.style.display = 'none';
-                fileInfo.innerHTML = `
-                    <i class="fas fa-file"></i> ${file.name} (${formatFileSize(file.size)})
-                    <input type="text" id="filePrompt" placeholder="✍️ اكتب وصفًا للملف..." style="width: 100%; margin-top: 10px;">
-                `;
-                fileInfo.style.display = 'block';
-            }
+            imagePreview.style.display = 'none';
+            fileInfo.innerHTML = `
+                <i class="fas fa-file"></i> ${file.name} (${formatFileSize(file.size)})
+                <input type="text" id="filePrompt" placeholder="✍️ اكتب وصفًا للملف..." style="width: 100%; margin-top: 10px;">
+            `;
+            fileInfo.style.display = 'block';
         }
 
         function formatFileSize(bytes) {
@@ -1474,6 +1522,14 @@ def create_static_files():
         async function sendMessage() {
             const messageText = userInput.value.trim();
             
+            // إذا كان هناك صورة معلقة
+            if (pendingImage) {
+                const prompt = messageText || "وصف هذه الصورة";
+                await sendImageWithPrompt(prompt);
+                userInput.value = "";
+                return;
+            }
+            
             // إذا كان هناك ملف معلق
             if (pendingFile) {
                 let prompt = messageText;
@@ -1483,8 +1539,7 @@ def create_static_files():
                 }
                 
                 if (!prompt) {
-                    prompt = pendingFile.type.match('image.*') ? 
-                        "وصف هذه الصورة" : "تحليل هذا الملف";
+                    prompt = "تحليل هذا الملف";
                 }
                 
                 await sendFileWithPrompt(prompt);
@@ -1547,6 +1602,52 @@ def create_static_files():
             }, 50);
         }
 
+        async function sendImageWithPrompt(prompt) {
+            if (!pendingImage) return;
+            
+            const formData = new FormData();
+            formData.append('file', pendingImage);
+            formData.append('prompt', prompt);
+            
+            addMessage(`📸 صورة: ${prompt}`, "user-message");
+            imagePreview.style.display = 'none';
+            pendingImage = null;
+            imageUpload.value = "";
+            
+            showTypingIndicator();
+            
+            try {
+                const response = await fetch(`${API_BASE_URL}/chat/image`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${userToken}`,
+                        'User-ID': currentUser
+                    },
+                    body: formData
+                });
+                
+                if (!response.ok) {
+                    throw new Error(await response.text());
+                }
+                
+                const data = await response.json();
+                
+                if (data.typing) {
+                    displayChunkedResponse(data.response);
+                } else {
+                    addMessage(data.response, "bot-message");
+                }
+                
+                saveChatHistory();
+                
+            } catch (error) {
+                addMessage("تعذر تحليل الصورة", "bot-message");
+                console.error("Error sending image:", error);
+            } finally {
+                hideTypingIndicator();
+            }
+        }
+
         async function sendFileWithPrompt(prompt) {
             if (!pendingFile) return;
             
@@ -1554,11 +1655,7 @@ def create_static_files():
             formData.append('file', pendingFile);
             formData.append('prompt', prompt);
             
-            const endpoint = pendingFile.type.match('image.*') ? 
-                '/chat/image' : '/chat/file';
-            
             addMessage(`📄 ${pendingFile.name}: ${prompt}`, "user-message");
-            imagePreview.style.display = 'none';
             fileInfo.style.display = 'none';
             pendingFile = null;
             fileUpload.value = "";
@@ -1566,7 +1663,7 @@ def create_static_files():
             showTypingIndicator();
             
             try {
-                const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+                const response = await fetch(`${API_BASE_URL}/chat/file`, {
                     method: 'POST',
                     headers: {
                         'Authorization': `Bearer ${userToken}`,
@@ -1685,6 +1782,20 @@ def create_static_files():
     
     with open(static_dir / 'index.html', 'w', encoding='utf-8') as f:
         f.write(index_html)
+
+# تكوين التطبيق ليعمل على Vercel
+def vercel_handler(event, context):
+    from flask import Request
+    from werkzeug.wrappers import Response
+    
+    with app.app_context():
+        req = Request(event)
+        res = app.full_dispatch_request()
+        return Response(
+            response=res.get_data(),
+            status=res.status_code,
+            headers=dict(res.headers)
+        )
 
 if __name__ == '__main__':
     create_static_files()
