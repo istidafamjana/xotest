@@ -6,3 +6,4 @@ urllib3
 langid
 Werkzeug
 PyJWT
+python-dotenv
