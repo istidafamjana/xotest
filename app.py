@@ -32,12 +32,8 @@ executor = ThreadPoolExecutor(max_workers=20)
 # قاعدة بيانات المستخدمين (في بيئة حقيقية استخدم قاعدة بيانات حقيقية)
 users = {
     "admin": {
-        "password": generate_password_hash("oth"),
-        "name": "oth"
-    },
-    "user1": {
-        "password": generate_password_hash("password1"),
-        "name": "User One"
+        "password": generate_password_hash("admin123"),
+        "name": "Admin User"
     }
 }
 
@@ -144,9 +140,9 @@ def verify_token(token):
     except jwt.InvalidTokenError:
         return None
 
-@app.route('/auth', methods=['POST'])
-def authenticate():
-    """نقطة نهاية المصادقة"""
+@app.route('/auth/login', methods=['POST'])
+def login():
+    """نقطة نهاية تسجيل الدخول"""
     data = request.get_json()
     username = data.get('username')
     password = data.get('password')
@@ -160,6 +156,27 @@ def authenticate():
     
     token = create_token(username)
     return jsonify({"token": token, "username": username, "name": user['name']})
+
+@app.route('/auth/register', methods=['POST'])
+def register():
+    """نقطة نهاية إنشاء حساب"""
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+    
+    if not username or not password:
+        return jsonify({"error": "اسم المستخدم وكلمة المرور مطلوبان"}), 400
+    
+    if username in users:
+        return jsonify({"error": "اسم المستخدم موجود بالفعل"}), 400
+    
+    users[username] = {
+        'password': generate_password_hash(password),
+        'name': username
+    }
+    
+    token = create_token(username)
+    return jsonify({"token": token, "username": username, "name": username})
 
 @app.route('/chat', methods=['GET'])
 def chat():
@@ -213,65 +230,6 @@ def chat():
         conversations[username]['history'] = conversations[username]['history'][-20:]
     
     return jsonify({"response": response})
-
-@app.route('/chat/img', methods=['POST'])
-def chat_image():
-    """نقطة نهاية معالجة الصور"""
-    token = request.headers.get('Authorization')
-    user_id = request.headers.get('User-ID')
-    
-    if not token or not token.startswith('Bearer '):
-        return jsonify({"error": "التوكن مطلوب"}), 401
-    
-    token = token.split(' ')[1]
-    username = verify_token(token)
-    
-    if not username or username != user_id:
-        return jsonify({"error": "توكن غير صالح أو منتهي الصلاحية"}), 401
-    
-    if 'file' not in request.files:
-        return jsonify({"error": "لم يتم توفير ملف"}), 400
-    
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"error": "لم يتم اختيار ملف"}), 400
-    
-    # حفظ الملف مؤقتاً
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.jpg')
-    file.save(temp_file.name)
-    temp_file.close()
-    
-    # تحليل الصورة
-    prompt = request.form.get('prompt', 'وصف هذه الصورة')
-    lang = detect_language(prompt) if prompt else 'ar'
-    
-    analysis = asyncio.run(analyze_image_with_prompt(temp_file.name, prompt, lang))
-    
-    # تنظيف الملف المؤقت
-    try:
-        os.unlink(temp_file.name)
-    except:
-        pass
-    
-    if not analysis:
-        return jsonify({"error": "تعذر تحليل الصورة"}), 500
-    
-    # تحديث سجل المحادثة
-    if username not in conversations:
-        conversations[username] = {
-            'history': [],
-            'expiry': datetime.now() + timedelta(hours=5),
-            'lang': lang
-        }
-    
-    conversations[username]['history'].append(f"User image analysis request: {prompt}")
-    conversations[username]['history'].append(f"Image analysis: {analysis}")
-    
-    # الحفاظ على آخر 20 رسالة كحد أقصى
-    if len(conversations[username]['history']) > 20:
-        conversations[username]['history'] = conversations[username]['history'][-20:]
-    
-    return jsonify({"response": analysis})
 
 @app.route('/chat/file', methods=['POST'])
 def chat_file():
