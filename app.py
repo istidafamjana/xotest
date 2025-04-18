@@ -1441,4 +1441,4 @@ def create_static_files():
 
 if __name__ == '__main__':
     create_static_files()
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(debug=True)
