@@ -7,3 +7,7 @@ langid
 Werkzeug
 PyJWT
 python-dotenv
+python-multipart
+asyncio
+concurrent-log-handler
+werkzeug
