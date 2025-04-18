@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 # التوكنات والمفاتيح
 SECRET_KEY = "your_very_secret_key_here"
 GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"
+PAGE_ACCESS_TOKEN = "EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD"
+VERIFY_TOKEN = "d51ee4e3183dbbd9a27b7d2c1af8c655"
 
 # تهيئة نموذج Gemini
 genai.configure(api_key=GEMINI_API_KEY)
@@ -276,6 +278,129 @@ def chat_file():
     conversations[username]['history'].append(f"Bot response: {response_text}")
     
     return jsonify({"response": response_text})
+
+# دعم فيسبوك (يبقى كما هو)
+@app.route('/webhook', methods=['GET', 'POST'])
+def webhook():
+    """نقطة نهاية الويب هوك لفيسبوك"""
+    if request.method == 'GET':
+        if request.args.get('hub.verify_token') == VERIFY_TOKEN:
+            return request.args.get('hub.challenge')
+        return "Verification failed", 403
+    
+    data = request.get_json()
+    asyncio.run(process_facebook_events(data))
+    return jsonify({"status": "success"}), 200
+
+async def process_facebook_events(data):
+    """معالجة أحداث فيسبوك"""
+    if not data.get('entry'):
+        return
+
+    for entry in data['entry']:
+        for event in entry.get('messaging', []):
+            try:
+                sender_id = event['sender']['id']
+                
+                # تنظيف المحادثات القديمة
+                now = datetime.now()
+                if sender_id in conversations and conversations[sender_id]['expiry'] < now:
+                    del conversations[sender_id]
+                
+                # تحديد اللغة
+                lang = 'ar'
+                if 'message' in event and 'text' in event['message']:
+                    lang = detect_language(event['message']['text'])
+                
+                # معالجة الرسائل
+                if 'message' in event:
+                    if 'text' in event['message']:
+                        await process_facebook_message(sender_id, event['message']['text'], lang)
+                    elif 'attachments' in event['message']:
+                        for attachment in event['message']['attachments']:
+                            if attachment['type'] == 'image':
+                                await handle_facebook_image(sender_id, attachment['payload']['url'], lang)
+                                
+            except Exception as e:
+                logger.error(f"Event processing error: {str(e)}")
+
+async def process_facebook_message(sender_id, message_text, lang='ar'):
+    """معالجة رسالة نصية من فيسبوك"""
+    try:
+        # استخدام نفس الدالة المستخدمة في واجهة الموقع
+        response = await generate_response_async(message_text, None, lang)
+        
+        if not response:
+            response = "حدث خطأ أثناء توليد الرد"
+            
+        await send_facebook_message(sender_id, response)
+        
+        # تحديث سجل المحادثة
+        if sender_id not in conversations:
+            conversations[sender_id] = {
+                'history': [],
+                'expiry': datetime.now() + timedelta(hours=5),
+                'lang': lang
+            }
+        
+        conversations[sender_id]['history'].append(f"User: {message_text}")
+        conversations[sender_id]['history'].append(f"Bot: {response}")
+        
+    except Exception as e:
+        logger.error(f"Error processing Facebook message: {str(e)}")
+        await send_facebook_message(sender_id, "تعذر جلب الرد. حاول لاحقاً.")
+
+async def handle_facebook_image(sender_id, image_url, lang='ar'):
+    """معالجة صورة من فيسبوك"""
+    try:
+        await send_facebook_message(sender_id, "📸 جاري تحليل الصورة..." if lang == 'ar' else "📸 Analyzing image...")
+        
+        image_path = await download_image(image_url)
+        if not image_path:
+            await send_facebook_message(sender_id, "⚠️ تعذر تحميل الصورة" if lang == 'ar' else "⚠️ Failed to load image")
+            return
+        
+        # استخدام وصف افتراضي للصورة
+        prompt = "وصف هذه الصورة" if lang == 'ar' else "Describe this image"
+        analysis = await analyze_image_with_prompt(image_path, prompt, lang)
+        
+        if analysis:
+            await send_facebook_message(sender_id, analysis)
+            
+            # تحديث سجل المحادثة
+            if sender_id not in conversations:
+                conversations[sender_id] = {
+                    'history': [],
+                    'expiry': datetime.now() + timedelta(hours=5),
+                    'lang': lang
+                }
+            
+            conversations[sender_id]['history'].append(f"User sent image: {image_url}")
+            conversations[sender_id]['history'].append(f"Image analysis: {analysis}")
+        else:
+            await send_facebook_message(sender_id, "⚠️ تعذر تحليل الصورة" if lang == 'ar' else "⚠️ Failed to analyze image")
+            
+    except Exception as e:
+        logger.error(f"Error handling Facebook image: {str(e)}")
+        await send_facebook_message(sender_id, "⚠️ حدث خطأ أثناء معالجة الصورة" if lang == 'ar' else "⚠️ Error processing image")
+
+async def send_facebook_message(recipient_id, message_text):
+    """إرسال رسالة إلى مستخدم فيسبوك"""
+    url = f"https://graph.facebook.com/v17.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
+    payload = {
+        "recipient": {"id": recipient_id},
+        "message": {"text": message_text}
+    }
+    
+    try:
+        response = await asyncio.get_event_loop().run_in_executor(
+            executor,
+            lambda: requests.post(url, json=payload, timeout=7)
+        )
+        if response.status_code != 200:
+            logger.error(f"Facebook API error: {response.text}")
+    except Exception as e:
+        logger.error(f"Error sending Facebook message: {str(e)}")
 
 if __name__ == '__main__':
     app.run(threaded=True)
