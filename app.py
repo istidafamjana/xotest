@@ -1,6 +1,8 @@
+import os
+import logging
+from logging.handlers import RotatingFileHandler
 from flask import Flask, request, jsonify, send_from_directory
 from datetime import datetime, timedelta
-import logging
 import jwt
 from werkzeug.security import generate_password_hash, check_password_hash
 import google.generativeai as genai
@@ -8,21 +10,30 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import langid
 import requests
-import os
 import tempfile
 import urllib.request
+import json
+from pathlib import Path
 
 app = Flask(__name__, static_folder='static')
 
 # تكوين السجلات
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        RotatingFileHandler('app.log', maxBytes=1000000, backupCount=5),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # التوكنات والمفاتيح
-SECRET_KEY = "oth2024"
-PAGE_ACCESS_TOKEN = "EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD"
-VERIFY_TOKEN = "d51ee4e3183dbbd9a27b7d2c1af8c655"
-GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"
+SECRET_KEY = os.getenv('SECRET_KEY', 'your_very_strong_secret_key_here')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'your_gemini_api_key')
+PAGE_ACCESS_TOKEN = os.getenv('PAGE_ACCESS_TOKEN', 'your_facebook_page_token')
+VERIFY_TOKEN = os.getenv('VERIFY_TOKEN', 'your_facebook_verify_token')
+
 # تهيئة نموذج Gemini
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
@@ -35,9 +46,14 @@ executor = ThreadPoolExecutor(max_workers=20)
 users_db = {
     "admin": {
         "password": generate_password_hash("admin123"),
-        "name": "Admin User"
+        "name": "Admin User",
+        "conversation_id": str(datetime.now().timestamp())
     }
 }
+
+# مسار تخزين المحادثات
+CHAT_HISTORY_DIR = Path('chat_histories')
+CHAT_HISTORY_DIR.mkdir(exist_ok=True)
 
 def detect_language(text):
     """تحديد لغة النص"""
@@ -50,19 +66,87 @@ def detect_language(text):
 async def generate_response(prompt, context=None, lang='ar'):
     """إنشاء رد باستخدام Gemini"""
     try:
+        system_instruction = """
+        أنت مساعد ذكي يتحدث العربية بطلاقة. يمكنك تحليل الصور والملفات والرد على الأسئلة المعقدة.
+        عند عرض أكواد برمجية، قم بتنسيقها بشكل جميل كما في ChatGPT.
+        أجب بطريقة واضحة ومنظمة مع عناوين ونقاط عندما يكون ذلك مناسبًا.
+        """
+        
         if context:
-            prompt = f"{context}\n\n{prompt}" if lang == 'en' else f"{context}\n\n{prompt}"
+            messages = [
+                {"role": "user", "parts": [system_instruction]},
+                {"role": "model", "parts": ["حسنًا، أنا مستعد للمساعدة!"]},
+                {"role": "user", "parts": [context]},
+                {"role": "user", "parts": [prompt]}
+            ]
+        else:
+            messages = [
+                {"role": "user", "parts": [system_instruction]},
+                {"role": "model", "parts": ["حسنًا، أنا مستعد للمساعدة!"]},
+                {"role": "user", "parts": [prompt]}
+            ]
         
         response = await asyncio.get_event_loop().run_in_executor(
             executor,
-            lambda: model.generate_content(prompt, generation_config=genai.types.GenerationConfig(
-                temperature=0.3,
-                max_output_tokens=2000
-            ))
+            lambda: model.generate_content(
+                messages,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.3,
+                    max_output_tokens=2000,
+                    candidate_count=1
+                )
+            )
         )
-        return response.text
+        
+        # معالجة الرد لتحسين تنسيق الأكواد
+        text = response.text
+        if "```" in text:
+            text = text.replace("```", "<pre><code>")
+            text = text.replace("<pre><code>", "<pre><code>", 1)
+            text = text.replace("<pre><code>", "</code></pre>", 1)
+        
+        return text
     except Exception as e:
         logger.error(f"Generation error: {str(e)}")
+        return None
+
+async def analyze_file(file_path, prompt, lang='ar'):
+    """تحليل الملف باستخدام Gemini"""
+    try:
+        file = genai.upload_file(file_path)
+        
+        if lang == 'ar':
+            full_prompt = f"""
+            بناءً على طلب المستخدم: {prompt}
+            
+            قم بتحليل هذا الملف مع التركيز على:
+            1. محتوى الملف
+            2. ما طلبه المستخدم بالتحديد
+            3. أي معلومات إضافية مفيدة
+            
+            أجب بطريقة منظمة مع عناوين ونقاط.
+            أجب باللغة العربية.
+            """
+        else:
+            full_prompt = f"""
+            Based on user request: {prompt}
+            
+            Analyze this file focusing on:
+            1. File content
+            2. Exactly what the user asked
+            3. Any additional useful information
+            
+            Answer in English.
+            """
+            
+        response = await asyncio.get_event_loop().run_in_executor(
+            executor,
+            lambda: model.generate_content([full_prompt, file])
+        )
+        
+        return response.text
+    except Exception as e:
+        logger.error(f"File analysis error: {str(e)}")
         return None
 
 async def analyze_image(image_url, prompt, lang='ar'):
@@ -88,7 +172,8 @@ async def analyze_image(image_url, prompt, lang='ar'):
             2. التفاصيل المتعلقة بالطلب
             3. أي معلومات إضافية مفيدة
             
-            أجب باللغة العربية
+            أجب بطريقة منظمة مع عناوين ونقاط.
+            أجب باللغة العربية.
             """
         else:
             full_prompt = f"""
@@ -99,7 +184,7 @@ async def analyze_image(image_url, prompt, lang='ar'):
             2. Relevant details
             3. Any additional useful information
             
-            Answer in English
+            Answer in English.
             """
             
         response = await asyncio.get_event_loop().run_in_executor(
@@ -137,10 +222,50 @@ def verify_token(token):
     except jwt.InvalidTokenError:
         return None
 
+def save_conversation(username, conversation_data):
+    """حفظ المحادثة في ملف"""
+    try:
+        if username not in users_db:
+            return False
+            
+        conversation_id = users_db[username].get('conversation_id', str(datetime.now().timestamp()))
+        file_path = CHAT_HISTORY_DIR / f"{username}_{conversation_id}.json"
+        
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(conversation_data, f, ensure_ascii=False, indent=2)
+            
+        return True
+    except Exception as e:
+        logger.error(f"Error saving conversation: {str(e)}")
+        return False
+
+def load_conversation(username):
+    """تحميل المحادثة من ملف"""
+    try:
+        if username not in users_db:
+            return None
+            
+        conversation_id = users_db[username].get('conversation_id', str(datetime.now().timestamp()))
+        file_path = CHAT_HISTORY_DIR / f"{username}_{conversation_id}.json"
+        
+        if not file_path.exists():
+            return None
+            
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading conversation: {str(e)}")
+        return None
+
 @app.route('/')
 def index():
     """الصفحة الرئيسية"""
     return send_from_directory('static', 'index.html')
+
+@app.route('/static/<path:path>')
+def serve_static(path):
+    """خدمة الملفات الثابتة"""
+    return send_from_directory('static', path)
 
 @app.route('/auth/login', methods=['POST'])
 def login():
@@ -156,6 +281,11 @@ def login():
         user = users_db.get(username)
         if not user or not check_password_hash(user['password'], password):
             return jsonify({"error": "اسم المستخدم أو كلمة المرور غير صحيحة"}), 401
+        
+        # تحميل سجل المحادثة إذا وجد
+        conversation = load_conversation(username)
+        if conversation:
+            conversations[username] = conversation
         
         token = create_token(username)
         return jsonify({
@@ -184,7 +314,8 @@ def register():
         
         users_db[username] = {
             'password': generate_password_hash(password),
-            'name': username
+            'name': username,
+            'conversation_id': str(datetime.now().timestamp())
         }
         
         token = create_token(username)
@@ -234,7 +365,7 @@ def chat():
                 'history': [],
                 'expiry': datetime.now() + timedelta(hours=5),
                 'lang': lang,
-                'pending_image': None
+                'pending_file': None
             }
         
         conversations[username]['history'].append(f"User: {text}")
@@ -244,7 +375,15 @@ def chat():
         if len(conversations[username]['history']) > 20:
             conversations[username]['history'] = conversations[username]['history'][-20:]
         
-        return jsonify({"response": response}), 200
+        # حفظ المحادثة
+        save_conversation(username, conversations[username])
+        
+        # إرسال الرد بشكل تدريجي
+        return jsonify({
+            "response": response,
+            "typing": True,
+            "chunked": True
+        }), 200
         
     except Exception as e:
         logger.error(f"Chat error: {str(e)}")
@@ -297,17 +436,88 @@ def chat_image():
                 'history': [],
                 'expiry': datetime.now() + timedelta(hours=5),
                 'lang': detect_language(prompt),
-                'pending_image': None
+                'pending_file': None
             }
         
         conversations[username]['history'].append(f"User sent image with prompt: {prompt}")
         conversations[username]['history'].append(f"Image analysis: {analysis}")
         
-        return jsonify({"response": analysis}), 200
+        # حفظ المحادثة
+        save_conversation(username, conversations[username])
+        
+        return jsonify({
+            "response": analysis,
+            "typing": True
+        }), 200
         
     except Exception as e:
         logger.error(f"Image chat error: {str(e)}")
         return jsonify({"error": "حدث خطأ في معالجة الصورة"}), 500
+
+@app.route('/chat/file', methods=['POST'])
+def chat_file():
+    """معالجة الملفات"""
+    try:
+        # التحقق من التوكن
+        token = request.headers.get('Authorization')
+        if not token or not token.startswith('Bearer '):
+            return jsonify({"error": "التوكن مطلوب"}), 401
+        
+        token = token.split(' ')[1]
+        username = verify_token(token)
+        if not username:
+            return jsonify({"error": "توكن غير صالح أو منتهي الصلاحية"}), 401
+        
+        if 'file' not in request.files:
+            return jsonify({"error": "لم يتم توفير ملف"}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({"error": "لم يتم اختيار ملف"}), 400
+        
+        # حفظ الملف مؤقتاً
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=Path(file.filename).suffix)
+        file.save(temp_file.name)
+        temp_file.close()
+        
+        # الحصول على وصف الملف (إن وجد)
+        prompt = request.form.get('prompt', 'تحليل هذا الملف' if detect_language('') == 'ar' else 'Analyze this file')
+        
+        # تحليل الملف
+        analysis = asyncio.run(analyze_file(temp_file.name, prompt))
+        
+        # تنظيف الملف المؤقت
+        try:
+            os.unlink(temp_file.name)
+        except:
+            pass
+        
+        if not analysis:
+            return jsonify({"error": "تعذر تحليل الملف"}), 500
+        
+        # تحديث سجل المحادثة
+        if username not in conversations:
+            conversations[username] = {
+                'history': [],
+                'expiry': datetime.now() + timedelta(hours=5),
+                'lang': detect_language(prompt),
+                'pending_file': None
+            }
+        
+        conversations[username]['history'].append(f"User sent file ({file.filename}) with prompt: {prompt}")
+        conversations[username]['history'].append(f"File analysis: {analysis}")
+        
+        # حفظ المحادثة
+        save_conversation(username, conversations[username])
+        
+        return jsonify({
+            "response": analysis,
+            "typing": True
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"File chat error: {str(e)}")
+        return jsonify({"error": "حدث خطأ في معالجة الملف"}), 500
 
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
@@ -333,6 +543,8 @@ def webhook():
                         for attachment in message['attachments']:
                             if attachment['type'] == 'image':
                                 asyncio.run(handle_facebook_image(sender_id, attachment['payload']['url']))
+                            elif attachment['type'] == 'file':
+                                asyncio.run(handle_facebook_file(sender_id, attachment['payload']['url']))
         
         return jsonify({"status": "success"}), 200
         
@@ -345,22 +557,25 @@ async def handle_facebook_message(sender_id, text):
     try:
         lang = detect_language(text)
         
-        # التحقق مما إذا كانت هناك صورة تنتظر وصفاً
-        if sender_id in conversations and conversations[sender_id]['pending_image']:
-            image_url = conversations[sender_id]['pending_image']
-            conversations[sender_id]['pending_image'] = None
+        # التحقق مما إذا كان هناك ملف ينتظر وصفاً
+        if sender_id in conversations and conversations[sender_id]['pending_file']:
+            file_url = conversations[sender_id]['pending_file']
+            conversations[sender_id]['pending_file'] = None
             
-            await send_facebook_message(sender_id, "🔍 جاري تحليل الصورة..." if lang == 'ar' else "🔍 Analyzing image...")
+            await send_facebook_message(sender_id, "🔍 جاري تحليل الملف..." if lang == 'ar' else "🔍 Analyzing file...")
             
-            analysis = await analyze_image(image_url, text, lang)
+            analysis = await analyze_file_from_url(file_url, text, lang)
             if analysis:
                 await send_facebook_message(sender_id, analysis)
                 
                 # تحديث سجل المحادثة
-                conversations[sender_id]['history'].append(f"User image analysis request: {text}")
-                conversations[sender_id]['history'].append(f"Image analysis: {analysis}")
+                conversations[sender_id]['history'].append(f"User file analysis request: {text}")
+                conversations[sender_id]['history'].append(f"File analysis: {analysis}")
+                
+                # حفظ المحادثة
+                save_conversation(sender_id, conversations[sender_id])
             else:
-                await send_facebook_message(sender_id, "⚠️ تعذر تحليل الصورة" if lang == 'ar' else "⚠️ Failed to analyze image")
+                await send_facebook_message(sender_id, "⚠️ تعذر تحليل الملف" if lang == 'ar' else "⚠️ Failed to analyze file")
             
             return
         
@@ -374,7 +589,11 @@ async def handle_facebook_message(sender_id, text):
         if not response:
             response = "حدث خطأ أثناء توليد الرد" if lang == 'ar' else "Error generating response"
         
-        await send_facebook_message(sender_id, response)
+        # إرسال الرد بشكل تدريجي
+        chunks = [response[i:i+1900] for i in range(0, len(response), 1900)]
+        for chunk in chunks:
+            await send_facebook_message(sender_id, chunk)
+            await asyncio.sleep(1)  # تأخير بين الأجزاء
         
         # تحديث سجل المحادثة
         if sender_id not in conversations:
@@ -382,11 +601,14 @@ async def handle_facebook_message(sender_id, text):
                 'history': [],
                 'expiry': datetime.now() + timedelta(hours=5),
                 'lang': lang,
-                'pending_image': None
+                'pending_file': None
             }
         
         conversations[sender_id]['history'].append(f"User: {text}")
         conversations[sender_id]['history'].append(f"Bot: {response}")
+        
+        # حفظ المحادثة
+        save_conversation(sender_id, conversations[sender_id])
         
     except Exception as e:
         logger.error(f"Facebook message error: {str(e)}")
@@ -408,39 +630,105 @@ async def handle_facebook_image(sender_id, image_url):
                 'history': [],
                 'expiry': datetime.now() + timedelta(hours=5),
                 'lang': lang,
-                'pending_image': image_url
+                'pending_file': image_url
             }
         else:
-            conversations[sender_id]['pending_image'] = image_url
+            conversations[sender_id]['pending_file'] = image_url
+        
+        # حفظ المحادثة
+        save_conversation(sender_id, conversations[sender_id])
         
     except Exception as e:
         logger.error(f"Facebook image error: {str(e)}")
         await send_facebook_message(sender_id, "⚠️ حدث خطأ أثناء معالجة الصورة" if lang == 'ar' else "⚠️ Error processing image")
 
+async def handle_facebook_file(sender_id, file_url):
+    """معالجة ملف من فيسبوك"""
+    try:
+        lang = 'ar'
+        if sender_id in conversations:
+            lang = conversations[sender_id]['lang']
+        
+        # طلب وصف الملف من المستخدم
+        await send_facebook_message(sender_id, "📁 لتحليل الملف، الرجاء إرسال وصف لما تريد معرفته عنه:" if lang == 'ar' else "📁 To analyze the file, please describe what you want to know about it:")
+        
+        # تخزين معلومات الملف مؤقتاً
+        if sender_id not in conversations:
+            conversations[sender_id] = {
+                'history': [],
+                'expiry': datetime.now() + timedelta(hours=5),
+                'lang': lang,
+                'pending_file': file_url
+            }
+        else:
+            conversations[sender_id]['pending_file'] = file_url
+        
+        # حفظ المحادثة
+        save_conversation(sender_id, conversations[sender_id])
+        
+    except Exception as e:
+        logger.error(f"Facebook file error: {str(e)}")
+        await send_facebook_message(sender_id, "⚠️ حدث خطأ أثناء معالجة الملف" if lang == 'ar' else "⚠️ Error processing file")
+
+async def analyze_file_from_url(file_url, prompt, lang='ar'):
+    """تحليل ملف من URL"""
+    try:
+        # تحميل الملف
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        req = urllib.request.Request(file_url, headers=headers)
+        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+            with urllib.request.urlopen(req) as response:
+                tmp_file.write(response.read())
+            file_path = tmp_file.name
+
+        # تحليل الملف
+        analysis = await analyze_file(file_path, prompt, lang)
+        
+        return analysis
+    except Exception as e:
+        logger.error(f"File from URL analysis error: {str(e)}")
+        return None
+    finally:
+        if 'file_path' in locals() and os.path.exists(file_path):
+            try:
+                os.unlink(file_path)
+            except:
+                pass
+
 async def send_facebook_message(recipient_id, message_text):
     """إرسال رسالة إلى فيسبوك"""
     try:
         url = f"https://graph.facebook.com/v17.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
-        payload = {
+        
+        # إرسال إشعار الكتابة أولاً
+        typing_payload = {
+            "recipient": {"id": recipient_id},
+            "sender_action": "typing_on"
+        }
+        requests.post(url, json=typing_payload, timeout=5)
+        
+        # إرسال الرسالة الفعلية بعد تأخير
+        await asyncio.sleep(1)
+        
+        message_payload = {
             "recipient": {"id": recipient_id},
             "message": {"text": message_text}
         }
         
-        response = requests.post(url, json=payload, timeout=10)
+        response = requests.post(url, json=message_payload, timeout=10)
         if response.status_code != 200:
             logger.error(f"Facebook API error: {response.text}")
             
     except Exception as e:
         logger.error(f"Error sending to Facebook: {str(e)}")
 
-if __name__ == '__main__':
-    # إنشاء مجلد static إذا لم يكن موجوداً
-    if not os.path.exists('static'):
-        os.makedirs('static')
+def create_static_files():
+    """إنشاء الملفات الثابتة عند التشغيل الأول"""
+    static_dir = Path('static')
+    static_dir.mkdir(exist_ok=True)
     
-    # حفظ ملف HTML في مجلد static
-    html_content = """
-<!DOCTYPE html>
+    index_html = """
+    <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
     <meta charset="UTF-8">
@@ -1148,7 +1436,9 @@ if __name__ == '__main__':
 </html>
     """
     
-    with open('static/index.html', 'w', encoding='utf-8') as f:
-        f.write(html_content)
-    
+    with open(static_dir / 'index.html', 'w', encoding='utf-8') as f:
+        f.write(index_html)
+
+if __name__ == '__main__':
+    create_static_files()
     app.run(host='0.0.0.0', port=5000, debug=True)
