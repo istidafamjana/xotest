@@ -30,9 +30,10 @@ logger = logging.getLogger(__name__)
 
 # التوكنات والمفاتيح
 SECRET_KEY = os.getenv('SECRET_KEY', 'your_very_strong_secret_key_here')
-PAGE_ACCESS_TOKEN = "EAAOeBunVPqoBO5CLPaCIKVr21FqLLQqZBZAi8AnGYqurjwSOEki2ZC2IgrVtYZAeJtZC5ZAgmOTCPNzpEOsJiGZCQ7fZAXO7FX0AO4B1GpUTyQajZBGNzZA8KH2IGzSB3VLmBeTxNFG4k7VRUY1Svp4ZCiJDaZBSzEuBecZATZBR0f2faXamwLvONJwmDmSD6Oahkp1bhxwU3egCKJ8zuoy7GbZCUEWXyjNxwZDZD"
-VERIFY_TOKEN = "d51ee4e3183dbbd9a27b7d2c1af8c655"
-GEMINI_API_KEY = "AIzaSyA1TKhF1NQskLCqXR3O_cpISpTn9I8R-IU"
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'your_gemini_api_key')
+PAGE_ACCESS_TOKEN = os.getenv('PAGE_ACCESS_TOKEN', 'your_facebook_page_token')
+VERIFY_TOKEN = os.getenv('VERIFY_TOKEN', 'your_facebook_verify_token')
+
 # تهيئة نموذج Gemini
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
@@ -749,24 +750,7 @@ def create_static_files():
     static_dir = Path('static')
     static_dir.mkdir(exist_ok=True)
     
-    # إضافة مكتبة Prism.js لتلوين الأكواد
-    css_files = [
-        "https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/themes/prism-okaidia.min.css",
-        "https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/plugins/line-numbers/prism-line-numbers.min.css"
-    ]
-    
-    js_files = [
-        "https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/prism.min.js",
-        "https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/components/prism-python.min.js",
-        "https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/components/prism-javascript.min.js",
-        "https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/components/prism-html.min.js",
-        "https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/components/prism-css.min.js",
-        "https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/components/prism-bash.min.js",
-        "https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/plugins/line-numbers/prism-line-numbers.min.js",
-        "https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/plugins/copy-to-clipboard/prism-copy-to-clipboard.min.js"
-    ]
-    
-    index_html = f"""
+    index_html = """
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
@@ -775,18 +759,186 @@ def create_static_files():
     <title>دردشة الذكاء الاصطناعي</title>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&display=swap" rel="stylesheet">
-    {"".join(f'<link href="{css}" rel="stylesheet">' for css in css_files)}
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/themes/prism-okaidia.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/plugins/line-numbers/prism-line-numbers.min.css" rel="stylesheet">
     <style>
-        /* جميع أنماط CSS السابقة تبقى كما هي */
-        /* نضيف فقط بعض التحسينات لتنسيق الأكواد */
-        .code-container {{
+        body {
+            margin: 0;
+            font-family: 'Tajawal', sans-serif;
+            background-color: #1e1e2f;
+            color: #e0e0e0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .header {
+            background: linear-gradient(45deg, #6a11cb, #2575fc);
+            color: white;
+            padding: 15px;
+            text-align: center;
+            font-size: 1.8em;
+            font-weight: 700;
+            border-radius: 0 0 20px 20px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+            position: relative;
+        }
+        
+        .menu-button {
+            position: absolute;
+            top: 5px;
+            left: 10px;
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            padding: 5px 20px;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: all 0.5s ease;
+        }
+        
+        .menu-button:hover {
+            background: rgba(255, 255, 255, 0.2);
+            transform: scale(1.1);
+        }
+        
+        .logout-button {
+            position: absolute;
+            top: 5px;
+            right: 10px;
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            padding: 5px 15px;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            font-size: 0.9em;
+            transition: all 0.3s ease;
+        }
+        
+        .logout-button:hover {
+            background: rgba(255, 0, 0, 0.2);
+        }
+        
+        .overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 2;
+        }
+        
+        .sidebar {
+            display: none;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: #2a2a40;
+            padding: 20px;
+            border-radius: 15px;
+            text-align: center;
+            z-index: 3;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+            animation: slideIn 0.3s ease-in-out;
+        }
+        
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translate(-50%, -60%);
+            }
+            to {
+                opacity: 1;
+                transform: translate(-50%, -50%);
+            }
+        }
+        
+        .sidebar button {
+            background: linear-gradient(45deg, #6a11cb, #2575fc);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            padding: 12px;
+            margin: 10px 0;
+            cursor: pointer;
+            width: 200px;
+            font-size: 1em;
+            transition: all 0.3s ease;
+        }
+        
+        .sidebar button:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 4px 10px rgba(106, 17, 203, 0.5);
+        }
+        
+        .sidebar button i {
+            margin-left: 10px;
+            font-size: 1.2em;
+        }
+        
+        .chat-window {
+            flex: 1;
+            background: #25253d;
+            margin: 10px;
+            border-radius: 15px;
+            overflow-y: auto;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.2);
+        }
+        
+        .user-message, .bot-message {
+            padding: 12px 16px;
+            margin: 10px;
+            border-radius: 15px;
+            max-width: 70%;
+            word-wrap: break-word;
+            position: relative;
+            animation: fadeIn 0.5s ease-in-out;
+            display: inline-block;
+        }
+        
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .user-message {
+            background: linear-gradient(45deg, #2575fc, #6a11cb);
+            color: white;
+            margin-left: auto;
+            text-align: right;
+            box-shadow: 0 4px 10px rgba(37, 117, 252, 0.3);
+        }
+        
+        .bot-message {
+            background: #3a3a5d;
+            color: #e0e0e0;
+            margin-right: auto;
+            text-align: left;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+        }
+        
+        .code-container {
             position: relative;
             margin: 15px 0;
             border-radius: 8px;
             overflow: hidden;
-        }}
+        }
         
-        .copy-code-btn {{
+        .copy-code-btn {
             position: absolute;
             top: 5px;
             left: 5px;
@@ -799,25 +951,235 @@ def create_static_files():
             cursor: pointer;
             transition: all 0.3s ease;
             z-index: 10;
-        }}
+        }
         
-        .copy-code-btn:hover {{
+        .copy-code-btn:hover {
             background: rgba(255, 255, 255, 0.3);
-        }}
+        }
         
-        pre[class*="language-"] {{
+        pre[class*="language-"] {
             margin: 0;
             padding: 2em 1em 1em 1em;
             border-radius: 0;
-        }}
+        }
         
-        code[class*="language-"] {{
+        code[class*="language-"] {
             font-family: 'Courier New', Courier, monospace;
             direction: ltr;
             text-align: left;
-        }}
+        }
         
-        /* بقية الأنماط تبقى كما هي */
+        .input-area {
+            display: flex;
+            margin: 10px;
+            border-radius: 15px;
+            background: #2a2a40;
+            padding: 10px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+        }
+        
+        .input-area input {
+            flex: 1;
+            padding: 12px;
+            border-radius: 12px;
+            border: none;
+            outline: none;
+            background: #3a3a5d;
+            color: #e0e0e0;
+            font-size: 1em;
+        }
+        
+        .input-area button {
+            background: linear-gradient(45deg, #6a11cb, #2575fc);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            padding: 12px 20px;
+            margin-right: 30px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: all 0.3s ease;
+        }
+        
+        .input-area button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(106, 17, 203, 0.5);
+        }
+        
+        .file-upload-button {
+            background: linear-gradient(45deg, #6a11cb, #2575fc);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            padding: 12px 15px;
+            margin-left: 10px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+        
+        .file-upload-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(106, 17, 203, 0.5);
+        }
+        
+        .file-upload-input {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0;
+            cursor: pointer;
+        }
+        
+        .typing-indicator {
+            font-size: 1.5em;
+            color: #6a11cb;
+            margin: 10px;
+            display: none;
+        }
+        
+        .typing-indicator.active {
+            display: block;
+            animation: blink 1.5s infinite;
+        }
+        
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+        
+        .auth-container {
+            display: none;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background: linear-gradient(45deg, #1e1e2f, #25253d);
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            z-index: 10;
+        }
+        
+        .auth-form {
+            background: #2a2a40;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+            width: 90%;
+            max-width: 400px;
+            text-align: center;
+        }
+        
+        .auth-form h2 {
+            color: white;
+            margin-bottom: 20px;
+        }
+        
+        .auth-form input {
+            width: 100%;
+            padding: 12px;
+            margin: 10px 0;
+            border-radius: 8px;
+            border: none;
+            background: #3a3a5d;
+            color: white;
+            font-size: 1em;
+        }
+        
+        .auth-form button {
+            width: 100%;
+            padding: 12px;
+            margin-top: 20px;
+            background: linear-gradient(45deg, #6a11cb, #2575fc);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: all 0.3s ease;
+        }
+        
+        .auth-form button:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 5px 15px rgba(106, 17, 203, 0.4);
+        }
+        
+        .switch-auth {
+            margin-top: 15px;
+            color: #aaa;
+            cursor: pointer;
+        }
+        
+        .switch-auth:hover {
+            color: #fff;
+            text-decoration: underline;
+        }
+        
+        .error-message {
+            color: #ff6b6b;
+            margin-top: 10px;
+            display: none;
+        }
+        
+        .image-preview {
+            max-width: 200px;
+            max-height: 200px;
+            margin: 10px;
+            border-radius: 10px;
+            display: none;
+        }
+        
+        .file-info {
+            display: none;
+            background: #3a3a5d;
+            padding: 10px;
+            border-radius: 10px;
+            margin: 10px 0;
+        }
+        
+        .typing-animation {
+            display: inline-block;
+        }
+        
+        .typing-animation span {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background-color: #6a11cb;
+            border-radius: 50%;
+            margin: 0 2px;
+            animation: typing 1.4s infinite both;
+        }
+        
+        .typing-animation span:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+        
+        .typing-animation span:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+        
+        @keyframes typing {
+            0%, 60%, 100% { transform: translateY(0); }
+            30% { transform: translateY(-5px); }
+        }
+        
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 5px;
+            z-index: 100;
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -845,7 +1207,7 @@ def create_static_files():
         <input type="text" id="userInput" placeholder="⌨️ اكتب رسالتك..." onkeypress="handleKeyPress(event)">
         <button class="file-upload-button">
             <i class="fas fa-paperclip"></i>
-            <input type="file" id="fileUpload" class="file-upload-input" accept="image/*,.pdf,.txt,.doc,.docx,.zip" onchange="handleFileUpload()">
+            <input type="file" id="fileUpload" class="file-upload-input" accept="image/*,.pdf,.txt,.doc,.docx,.zip">
         </button>
         <button onclick="sendMessage()">إرسال</button>
     </div>
@@ -877,7 +1239,14 @@ def create_static_files():
         </div>
     </div>
 
-    {"".join(f'<script src="{js}"></script>' for js in js_files)}
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/prism.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/components/prism-python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/components/prism-javascript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/components/prism-html.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/components/prism-css.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/components/prism-bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/plugins/line-numbers/prism-line-numbers.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/plugins/copy-to-clipboard/prism-copy-to-clipboard.min.js"></script>
     
     <script>
         // متغيرات عامة
@@ -898,64 +1267,417 @@ def create_static_files():
         const fileInfo = document.getElementById("fileInfo");
         const fileUpload = document.getElementById("fileUpload");
         const toast = document.getElementById("toast");
+        const userInput = document.getElementById("userInput");
 
         // عند تحميل الصفحة
-        window.onload = function() {{
+        window.onload = function() {
             checkAuth();
+            
             // إصلاح مشكلة اختيار الملفات
-            document.querySelector('.file-upload-button').addEventListener('click', function(e) {{
+            document.querySelector('.file-upload-button').addEventListener('click', function(e) {
                 if (e.target !== this) return;
                 fileUpload.click();
-            }});
-        }};
+            });
+            
+            fileUpload.addEventListener('change', handleFileUpload);
+        };
 
-        function showToast(message) {{
+        function showToast(message) {
             toast.textContent = message;
             toast.style.display = 'block';
-            setTimeout(() => {{
+            setTimeout(() => {
                 toast.style.display = 'none';
-            }}, 3000);
-        }}
+            }, 3000);
+        }
 
-        function copyCode(button) {{
+        function copyCode(button) {
             const codeBlock = button.nextElementSibling;
             const codeText = codeBlock.textContent;
             
-            navigator.clipboard.writeText(codeText).then(() => {{
+            navigator.clipboard.writeText(codeText).then(() => {
                 showToast("تم نسخ الكود بنجاح!");
-            }}).catch(err => {{
+            }).catch(err => {
                 console.error('Failed to copy code: ', err);
                 showToast("فشل نسخ الكود!");
-            }});
-        }}
+            });
+        }
 
-        // بقية الدوال تبقى كما هي مع تعديلات طفيفة لتحسين الأداء
-        
-        function handleFileUpload() {{
+        function checkAuth() {
+            const savedUser = localStorage.getItem('ai_chat_user');
+            const savedToken = localStorage.getItem('ai_chat_token');
+            
+            if (savedUser && savedToken) {
+                currentUser = savedUser;
+                userToken = savedToken;
+                showChatInterface();
+            } else {
+                showAuthContainer();
+            }
+        }
+
+        function showChatInterface() {
+            authContainer.style.display = 'none';
+            loadChatHistory();
+        }
+
+        function showAuthContainer() {
+            authContainer.style.display = 'flex';
+            showLoginForm();
+        }
+
+        function showLoginForm() {
+            loginForm.style.display = 'block';
+            registerForm.style.display = 'none';
+            loginError.style.display = 'none';
+            document.getElementById("loginUsername").value = '';
+            document.getElementById("loginPassword").value = '';
+        }
+
+        function showRegisterForm() {
+            loginForm.style.display = 'none';
+            registerForm.style.display = 'block';
+            registerError.style.display = 'none';
+            document.getElementById("registerUsername").value = '';
+            document.getElementById("registerPassword").value = '';
+            document.getElementById("registerConfirmPassword").value = '';
+        }
+
+        async function login() {
+            const username = document.getElementById("loginUsername").value.trim();
+            const password = document.getElementById("loginPassword").value.trim();
+            
+            if (!username || !password) {
+                showError(loginError, "الرجاء إدخال اسم المستخدم وكلمة المرور");
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE_URL}/auth/login`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        username: username,
+                        password: password
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    currentUser = data.username;
+                    userToken = data.token;
+                    localStorage.setItem('ai_chat_user', data.username);
+                    localStorage.setItem('ai_chat_token', data.token);
+                    showChatInterface();
+                } else {
+                    showError(loginError, data.error || "حدث خطأ أثناء تسجيل الدخول");
+                }
+            } catch (error) {
+                showError(loginError, "تعذر الاتصال بالخادم");
+                console.error("Login error:", error);
+            }
+        }
+
+        async function register() {
+            const username = document.getElementById("registerUsername").value.trim();
+            const password = document.getElementById("registerPassword").value.trim();
+            const confirmPassword = document.getElementById("registerConfirmPassword").value.trim();
+            
+            if (!username || !password || !confirmPassword) {
+                showError(registerError, "الرجاء ملء جميع الحقول");
+                return;
+            }
+            
+            if (password !== confirmPassword) {
+                showError(registerError, "كلمة المرور غير متطابقة");
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE_URL}/auth/register`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        username: username,
+                        password: password
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    currentUser = data.username;
+                    userToken = data.token;
+                    localStorage.setItem('ai_chat_user', data.username);
+                    localStorage.setItem('ai_chat_token', data.token);
+                    showChatInterface();
+                } else {
+                    showError(registerError, data.error || "حدث خطأ أثناء إنشاء الحساب");
+                }
+            } catch (error) {
+                showError(registerError, "تعذر الاتصال بالخادم");
+                console.error("Register error:", error);
+            }
+        }
+
+        function logout() {
+            currentUser = null;
+            userToken = null;
+            pendingFile = null;
+            localStorage.removeItem('ai_chat_user');
+            localStorage.removeItem('ai_chat_token');
+            showAuthContainer();
+            clearChat();
+        }
+
+        function showError(element, message) {
+            element.textContent = message;
+            element.style.display = 'block';
+        }
+
+        function handleFileUpload() {
             const file = fileUpload.files[0];
             if (!file) return;
             
             pendingFile = file;
             
-            if (file.type.match('image.*')) {{
+            if (file.type.match('image.*')) {
                 const reader = new FileReader();
-                reader.onload = function(e) {{
+                reader.onload = function(e) {
                     imagePreview.src = e.target.result;
                     imagePreview.style.display = 'block';
                     fileInfo.style.display = 'none';
-                }};
+                };
                 reader.readAsDataURL(file);
-            }} else {{
+            } else {
                 imagePreview.style.display = 'none';
                 fileInfo.innerHTML = `
-                    <i class="fas fa-file"></i> ${{file.name}} (${{formatFileSize(file.size)}})
+                    <i class="fas fa-file"></i> ${file.name} (${formatFileSize(file.size)})
                     <input type="text" id="filePrompt" placeholder="✍️ اكتب وصفًا للملف..." style="width: 100%; margin-top: 10px;">
                 `;
                 fileInfo.style.display = 'block';
-            }}
-        }}
+            }
+        }
 
-        // بقية الكود يبقى كما هو مع التأكد من أن جميع الدوال محمية بمعالجة الأخطاء
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        async function sendMessage() {
+            const messageText = userInput.value.trim();
+            
+            // إذا كان هناك ملف معلق
+            if (pendingFile) {
+                let prompt = messageText;
+                
+                if (!prompt && fileInfo.style.display === 'block') {
+                    prompt = document.getElementById("filePrompt").value.trim();
+                }
+                
+                if (!prompt) {
+                    prompt = pendingFile.type.match('image.*') ? 
+                        "وصف هذه الصورة" : "تحليل هذا الملف";
+                }
+                
+                await sendFileWithPrompt(prompt);
+                userInput.value = "";
+                return;
+            }
+            
+            if (!messageText) return;
+            
+            addMessage(messageText, "user-message");
+            userInput.value = "";
+            
+            showTypingIndicator();
+            
+            try {
+                const response = await fetch(`${API_BASE_URL}/chat?text=${encodeURIComponent(messageText)}`, {
+                    headers: {
+                        'Authorization': `Bearer ${userToken}`,
+                        'User-ID': currentUser
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error(await response.text());
+                }
+                
+                const data = await response.json();
+                
+                if (data.chunked) {
+                    displayChunkedResponse(data.response);
+                } else {
+                    addMessage(data.response, "bot-message");
+                }
+                
+                saveChatHistory();
+                
+            } catch (error) {
+                addMessage("تعذر جلب الرد من الخادم", "bot-message");
+                console.error("Error sending message:", error);
+            } finally {
+                hideTypingIndicator();
+            }
+        }
+
+        function displayChunkedResponse(response) {
+            const words = response.split(' ');
+            let currentChunk = '';
+            let messageDiv = createMessageDiv("", "bot-message");
+            
+            const interval = setInterval(() => {
+                if (words.length === 0) {
+                    clearInterval(interval);
+                    return;
+                }
+                
+                currentChunk += words.shift() + ' ';
+                messageDiv.innerHTML = currentChunk;
+                Prism.highlightAllUnder(messageDiv);
+                chatWindow.scrollTop = chatWindow.scrollHeight;
+            }, 50);
+        }
+
+        async function sendFileWithPrompt(prompt) {
+            if (!pendingFile) return;
+            
+            const formData = new FormData();
+            formData.append('file', pendingFile);
+            formData.append('prompt', prompt);
+            
+            const endpoint = pendingFile.type.match('image.*') ? 
+                '/chat/image' : '/chat/file';
+            
+            addMessage(`📄 ${pendingFile.name}: ${prompt}`, "user-message");
+            imagePreview.style.display = 'none';
+            fileInfo.style.display = 'none';
+            pendingFile = null;
+            fileUpload.value = "";
+            
+            showTypingIndicator();
+            
+            try {
+                const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${userToken}`,
+                        'User-ID': currentUser
+                    },
+                    body: formData
+                });
+                
+                if (!response.ok) {
+                    throw new Error(await response.text());
+                }
+                
+                const data = await response.json();
+                
+                if (data.typing) {
+                    displayChunkedResponse(data.response);
+                } else {
+                    addMessage(data.response, "bot-message");
+                }
+                
+                saveChatHistory();
+                
+            } catch (error) {
+                addMessage("تعذر تحليل الملف", "bot-message");
+                console.error("Error sending file:", error);
+            } finally {
+                hideTypingIndicator();
+            }
+        }
+
+        function createMessageDiv(text, className) {
+            const messageDiv = document.createElement("div");
+            messageDiv.className = className;
+            messageDiv.innerHTML = text;
+            chatWindow.appendChild(messageDiv);
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+            Prism.highlightAllUnder(messageDiv);
+            return messageDiv;
+        }
+
+        function addMessage(text, className) {
+            const div = createMessageDiv(text, className);
+            return div;
+        }
+
+        function showTypingIndicator() {
+            if (isTyping) return;
+            
+            isTyping = true;
+            const typingDiv = document.createElement("div");
+            typingDiv.className = "bot-message typing-indicator";
+            typingDiv.innerHTML = `
+                <div class="typing-animation">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+            `;
+            chatWindow.appendChild(typingDiv);
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+        }
+
+        function hideTypingIndicator() {
+            isTyping = false;
+            const typingIndicators = document.querySelectorAll(".typing-indicator");
+            typingIndicators.forEach(indicator => indicator.remove());
+        }
+
+        function clearChat() {
+            chatWindow.innerHTML = "";
+            if (currentUser) {
+                localStorage.removeItem(`ai_chat_history_${currentUser}`);
+            }
+        }
+
+        function saveChatHistory() {
+            if (currentUser) {
+                const messages = chatWindow.innerHTML;
+                localStorage.setItem(`ai_chat_history_${currentUser}`, messages);
+            }
+        }
+
+        function loadChatHistory() {
+            if (currentUser) {
+                const savedMessages = localStorage.getItem(`ai_chat_history_${currentUser}`);
+                if (savedMessages) {
+                    chatWindow.innerHTML = savedMessages;
+                    chatWindow.scrollTop = chatWindow.scrollHeight;
+                    Prism.highlightAll();
+                }
+            }
+        }
+
+        function toggleMenu() {
+            const overlay = document.getElementById("overlay");
+            const sidebar = document.getElementById("sidebar");
+            
+            if (overlay.style.display === "block") {
+                overlay.style.display = "none";
+                sidebar.style.display = "none";
+            } else {
+                overlay.style.display = "block";
+                sidebar.style.display = "block";
+            }
+        }
+
+        function handleKeyPress(event) {
+            if (event.key === "Enter") {
+                sendMessage();
+            }
+        }
     </script>
 </body>
 </html>
