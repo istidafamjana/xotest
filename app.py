@@ -32,8 +32,8 @@ executor = ThreadPoolExecutor(max_workers=20)
 # قاعدة بيانات المستخدمين (في بيئة حقيقية استخدم قاعدة بيانات حقيقية)
 users = {
     "admin": {
-        "password": generate_password_hash("admin123"),
-        "name": "Admin User"
+        "password": generate_password_hash("oth"),
+        "name": "oth"
     },
     "user1": {
         "password": generate_password_hash("password1"),
